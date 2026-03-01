@@ -140,6 +140,34 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
   const matchedY = y_axis.map((k) => findKey(k)).filter(Boolean) as string[];
   const yKeys = matchedY.length > 0 ? matchedY : keys.filter((k) => k !== xKey).slice(0, 3);
 
+  // Normalize data for line/area: ensure y-axis values are numbers to prevent scale clipping
+  const isLineOrArea = type === "line" || type === "area";
+  const chartData = isLineOrArea
+    ? data.map((row) => {
+        const out: Record<string, unknown> = { ...row };
+        for (const k of yKeys) {
+          const v = row[k];
+          out[k] = typeof v === "number" && !Number.isNaN(v) ? v : Number(v) || 0;
+        }
+        return out;
+      })
+    : data;
+
+  // Explicit domain for line/area to prevent y-axis clipping (Recharts can clip with string values or auto domain)
+  const yDomain: [number, number] | undefined = isLineOrArea
+    ? (() => {
+        let max = 0;
+        for (const row of chartData) {
+          for (const k of yKeys) {
+            const v = Number(row[k]);
+            if (!Number.isNaN(v) && v > max) max = v;
+          }
+        }
+        const top = max > 0 ? max * 1.05 : 1;
+        return [0, top];
+      })()
+    : undefined;
+
   if (type === "pie") {
     const formatLabel = (k: string) =>
       k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -203,7 +231,7 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
   const chartMargin = { top: 10, right: 10, left: 0, bottom: 0 };
 
   const commonProps = {
-    data,
+    data: chartData,
     margin: chartMargin,
     style: { minHeight: 200 },
   };
@@ -223,9 +251,9 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
             </defs>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide />
+            <YAxis hide domain={yDomain} />
             <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} />
-            {yKeys.map((key, i) => (
+            {yKeys.map((key) => (
               <Area
                 key={key}
                 type="monotone"
@@ -233,6 +261,7 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
                 stroke="var(--primary)"
                 strokeWidth={2}
                 fill="url(#dynamicAreaGrad)"
+                connectNulls
               />
             ))}
           </AreaChart>
@@ -250,10 +279,10 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
           <LineChart {...commonProps}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide />
+            <YAxis hide domain={yDomain} />
             <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} />
             {yKeys.map((key) => (
-              <Line key={key} type="monotone" dataKey={key} stroke="var(--primary)" strokeWidth={2} dot={false} />
+              <Line key={key} type="monotone" dataKey={key} stroke="var(--primary)" strokeWidth={2} dot={false} connectNulls />
             ))}
           </LineChart>
         )}

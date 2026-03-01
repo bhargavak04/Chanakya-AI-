@@ -92,8 +92,12 @@ async function generateAiInsights(
   }
 }
 
+const LOG_PREFIX = "[CHAT]";
+
 export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuccess | ChatResponseError> {
   const { dbId, message, mode = "analyze", conversationState } = input;
+
+  console.log(`${LOG_PREFIX} Input:`, { dbId, message, mode, hasConversationState: !!conversationState });
 
   const config = getConnectionConfig(dbId);
   if (!config) {
@@ -124,6 +128,8 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
     return { error: { type: "llm_error", message: msg } };
   }
 
+  console.log(`${LOG_PREFIX} LLM raw output:`, llmResult.content);
+
   const parsed = parseLLMOutput(llmResult.content);
   if ("error" in parsed) {
     return { error: { type: "invalid_query", message: parsed.error } };
@@ -133,6 +139,9 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
   if (!validation.valid) {
     return { error: { type: "invalid_sql", message: validation.error ?? "SQL validation failed" } };
   }
+
+  console.log(`${LOG_PREFIX} LLM parsed JSON:`, JSON.stringify(parsed, null, 2));
+  console.log(`${LOG_PREFIX} SQL generated:`, validation.sql);
 
   let rows: Record<string, unknown>[];
   let queryTimeMs: number;
@@ -144,6 +153,8 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
     const msg = err instanceof Error ? err.message : "Query execution failed";
     return { error: { type: "query_error", message: msg } };
   }
+
+  console.log(`${LOG_PREFIX} Results: rows=${rows.length}, head=`, JSON.stringify(rows.slice(0, 5), null, 2));
 
   const chartConfig: ChartConfig = {
     type: parsed.chart.type ?? "table",
