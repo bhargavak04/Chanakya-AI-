@@ -25,6 +25,7 @@ const cinzel = Cinzel({
 export const metadata: Metadata = {
   title: "Chanakya",
   description: "AI-native analytics for Sportomic",
+  icons: { icon: "/favicon.svg" },
 };
 
 export default function RootLayout({

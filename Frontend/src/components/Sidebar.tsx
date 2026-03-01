@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useApp } from '@/context/AppContext';
+import { Logo } from './Logo';
 
 function showComingSoon() {
   toast.info('Coming soon');
@@ -45,7 +46,8 @@ export function Sidebar() {
 
   return (
     <aside className="w-64 border-r border-border bg-sidebar h-screen flex flex-col sticky top-0">
-      <Link href="/" className="p-4 flex items-center mb-4">
+      <Link href="/" className="p-4 flex items-center gap-1.5 mb-4">
+        <Logo size={40} />
         <span className="font-chanakya font-semibold text-lg tracking-tight text-foreground/90">Chanakya</span>
       </Link>
 
