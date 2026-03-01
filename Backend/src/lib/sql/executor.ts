@@ -1,12 +1,12 @@
 /**
  * Execute validated SQL against user database
- * Query timeout: 5 seconds
+ * Query timeout: 45 seconds (Neon serverless can have cold starts)
  */
 import pg from "pg";
 import mysql from "mysql2/promise";
 import { getPool, isPostgres } from "../db/connections.js";
 
-const QUERY_TIMEOUT_MS = 5000;
+const QUERY_TIMEOUT_MS = 45000;
 
 export async function executeQuery(
   dbId: string,
@@ -21,7 +21,7 @@ export async function executeQuery(
       const result = await Promise.race([
         client.query({ text: sql, rowMode: "array" }),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Query timeout (5s)")), QUERY_TIMEOUT_MS)
+          setTimeout(() => reject(new Error(`Query timeout (${QUERY_TIMEOUT_MS / 1000}s)`)), QUERY_TIMEOUT_MS)
         ),
       ]);
 
@@ -42,7 +42,7 @@ export async function executeQuery(
     const result = (await Promise.race([
       pool.query(sql),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Query timeout (5s)")), QUERY_TIMEOUT_MS)
+        setTimeout(() => reject(new Error(`Query timeout (${QUERY_TIMEOUT_MS / 1000}s)`)), QUERY_TIMEOUT_MS)
       ),
     ])) as unknown as [mysql.RowDataPacket[]];
 

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ChatArea } from "@/components/ChatArea";
 import { RightPanel } from "@/components/RightPanel";
 import { Search, ChevronDown, Share2, MoreHorizontal, Check } from "lucide-react";
+import { BookmarksDropdown } from "@/components/BookmarksDropdown";
 import { useApp } from "@/context/AppContext";
 import {
   DropdownMenu,
@@ -15,7 +16,12 @@ import {
 
 export default function Home() {
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
-  const { activeDbId, databases, setActiveDbIdAndClearChat } = useApp();
+  const { activeDbId, databases, setActiveDbIdAndClearChat, setCustomizeTarget } = useApp();
+
+  const handleOpenChartCustomize = (messageId: string, response: import("@/lib/api").ChatResponseSuccess) => {
+    setCustomizeTarget(messageId, response);
+    setIsRightPanelOpen(true);
+  };
   const activeDb = databases.find((d) => d.id === activeDbId);
 
   return (
@@ -48,6 +54,8 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-2">
+            <BookmarksDropdown dbId={activeDbId} />
+            <div className="w-[1px] h-4 bg-border mx-1" />
             <button className="p-1.5 rounded-md hover:bg-secondary/80 text-muted-foreground hover:text-foreground transition-colors">
               <Search className="w-4 h-4" />
             </button>
@@ -62,12 +70,18 @@ export default function Home() {
         </header>
 
         <div className="flex-1 overflow-hidden flex relative linear-gradient">
-          <ChatArea onOpenChartCustomize={() => setIsRightPanelOpen(true)} />
+          <ChatArea onOpenChartCustomize={handleOpenChartCustomize} />
         </div>
       </div>
       
       {isRightPanelOpen && (
-        <RightPanel isOpen={isRightPanelOpen} onClose={() => setIsRightPanelOpen(false)} />
+        <RightPanel
+          isOpen={isRightPanelOpen}
+          onClose={() => {
+            setIsRightPanelOpen(false);
+            setCustomizeTarget(null, null);
+          }}
+        />
       )}
     </div>
   );

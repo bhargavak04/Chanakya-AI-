@@ -11,12 +11,16 @@ import {
   PieChart,
   Pie,
   Cell,
+  ScatterChart,
+  Scatter,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
   LabelList,
+  Legend,
+  ReferenceLine,
 } from "recharts";
 import type { ChartConfig } from "@/lib/api";
 import {
@@ -73,10 +77,13 @@ interface DynamicChartProps {
   data: Record<string, unknown>[];
   config: ChartConfig;
   className?: string;
+  /** When true, show Y-axis scale labels. Default false; enable via Customize. */
+  showYAxis?: boolean;
 }
 
-export function DynamicChart({ data, config, className = "" }: DynamicChartProps) {
-  const { type, x_axis, y_axis, group_by } = config;
+export function DynamicChart({ data, config, className = "", showYAxis = false }: DynamicChartProps) {
+  const { type, x_axis, y_axis, group_by, stacked, y_axis_right, reference_line } = config;
+  const hideY = !showYAxis;
 
   if (type === "table") {
     const formatCell = (v: unknown): string => {
@@ -139,39 +146,68 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
   const xKey = findKey(x_axis) ?? keys[0] ?? "x";
   const matchedY = y_axis.map((k) => findKey(k)).filter(Boolean) as string[];
   const yKeys = matchedY.length > 0 ? matchedY : keys.filter((k) => k !== xKey).slice(0, 3);
+  const matchedYRight = (y_axis_right ?? []).map((k) => findKey(k)).filter(Boolean) as string[];
+  const yKeysRight = matchedYRight.filter((k) => !yKeys.includes(k));
+  const formatLabel = (k: string) => k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-  // Normalize data for line/area: ensure y-axis values are numbers to prevent scale clipping
-  const isLineOrArea = type === "line" || type === "area";
-  const chartData = isLineOrArea
-    ? data.map((row) => {
-        const out: Record<string, unknown> = { ...row };
-        for (const k of yKeys) {
-          const v = row[k];
-          out[k] = typeof v === "number" && !Number.isNaN(v) ? v : Number(v) || 0;
+  // Bar with group_by: pivot so each group value becomes a series (colored bar with legend)
+  const groupKey = group_by?.[0] ? findKey(group_by[0]) : null;
+  const useGroupedBars = type === "bar" && groupKey && yKeys.length > 0;
+  let barChartData: Record<string, unknown>[] = data;
+  let barSeriesKeys: string[] = yKeys;
+
+  if (useGroupedBars) {
+    const valueKey = yKeys[0];
+    const groupValues = [...new Set(data.map((r) => String(r[groupKey!] ?? "").trim()))].filter(Boolean);
+    if (groupValues.length > 0) {
+      const xValues = [...new Set(data.map((r) => r[xKey]))];
+      barChartData = xValues.map((xVal) => {
+        const out: Record<string, unknown> = { [xKey]: xVal };
+        for (const gv of groupValues) {
+          const rows = data.filter(
+            (r) => r[xKey] === xVal && String(r[groupKey!] ?? "").trim() === gv
+          );
+          const val = rows.length
+            ? rows.reduce((sum, r) => sum + (Number(r[valueKey]) || 0), 0)
+            : 0;
+          out[gv] = val;
         }
         return out;
-      })
-    : data;
+      });
+      barSeriesKeys = groupValues;
+    }
+  }
 
-  // Explicit domain for line/area to prevent y-axis clipping (Recharts can clip with string values or auto domain)
-  const yDomain: [number, number] | undefined = isLineOrArea
-    ? (() => {
-        let max = 0;
-        for (const row of chartData) {
-          for (const k of yKeys) {
-            const v = Number(row[k]);
-            if (!Number.isNaN(v) && v > max) max = v;
+  // Normalize data for line/area/scatter: ensure y-axis values are numbers
+  const isLineOrArea = type === "line" || type === "area";
+  const isScatter = type === "scatter";
+  const allYKeys = [...yKeys, ...yKeysRight];
+  const chartData =
+    isLineOrArea || isScatter
+      ? data.map((row) => {
+          const out: Record<string, unknown> = { ...row };
+          for (const k of allYKeys) {
+            const v = row[k];
+            out[k] = typeof v === "number" && !Number.isNaN(v) ? v : Number(v) || 0;
           }
-        }
-        const top = max > 0 ? max * 1.05 : 1;
-        return [0, top];
-      })()
-    : undefined;
+          return out;
+        })
+      : data;
+
+  const calcDomain = (keys: string[]) => {
+    let max = 0;
+    for (const row of chartData) {
+      for (const k of keys) {
+        const v = Number(row[k]);
+        if (!Number.isNaN(v) && v > max) max = v;
+      }
+    }
+    return max > 0 ? ([0, max * 1.05] as [number, number]) : undefined;
+  };
+  const yDomain = isLineOrArea || isScatter ? calcDomain(yKeys) : undefined;
+  const yDomainRight = (isLineOrArea || isScatter) && yKeysRight.length > 0 ? calcDomain(yKeysRight) : undefined;
 
   if (type === "pie") {
-    const formatLabel = (k: string) =>
-      k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-
     let pieData: { name: string; value: number }[];
     if (data.length === 1 && yKeys.length > 0) {
       const row = data[0];
@@ -228,7 +264,18 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
     );
   }
 
-  const chartMargin = { top: 10, right: 10, left: 0, bottom: 0 };
+  const chartMargin = { top: 10, right: 10, left: hideY ? 0 : 40, bottom: 0 };
+
+  const refLine =
+    reference_line && typeof reference_line.value === "number" ? (
+      <ReferenceLine
+        y={reference_line.value}
+        stroke="var(--muted-foreground)"
+        strokeDasharray="4 4"
+        strokeOpacity={0.8}
+        label={reference_line.label ? { value: reference_line.label, position: "right" } : undefined}
+      />
+    ) : null;
 
   const commonProps = {
     data: chartData,
@@ -251,38 +298,109 @@ export function DynamicChart({ data, config, className = "" }: DynamicChartProps
             </defs>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide domain={yDomain} />
+            <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
+            {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />}
             <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} />
-            {yKeys.map((key) => (
+            {refLine}
+            {yKeys.map((key, idx) => (
               <Area
                 key={key}
                 type="monotone"
                 dataKey={key}
-                stroke="var(--primary)"
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]}
                 strokeWidth={2}
-                fill="url(#dynamicAreaGrad)"
+                fill={CHART_COLORS[idx % CHART_COLORS.length]}
+                fillOpacity={0.2}
+                connectNulls
+              />
+            ))}
+            {yKeysRight.map((key, idx) => (
+              <Area
+                key={`right-${key}`}
+                type="monotone"
+                dataKey={key}
+                yAxisId="right"
+                stroke={CHART_COLORS[(yKeys.length + idx) % CHART_COLORS.length]}
+                strokeWidth={2}
+                fill={CHART_COLORS[(yKeys.length + idx) % CHART_COLORS.length]}
+                fillOpacity={0.15}
                 connectNulls
               />
             ))}
           </AreaChart>
         ) : type === "bar" ? (
-          <BarChart {...commonProps}>
+          <BarChart {...commonProps} data={barChartData}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide />
-            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--secondary)", opacity: 0.5 }} />
-            {yKeys.map((key) => (
-              <Bar key={key} dataKey={key} fill="var(--primary)" radius={[4, 4, 0, 0]} barSize={24} />
+            <YAxis hide={hideY} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
+            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--secondary)", opacity: 0.5 }} formatter={(value: unknown, name: string) => [typeof value === "number" ? value.toLocaleString() : value, formatLabel(name)]} />
+            {(barSeriesKeys.length > 1 || useGroupedBars) && (
+              <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => formatLabel(value)} />
+            )}
+            {refLine}
+            {barSeriesKeys.map((key, idx) => (
+              <Bar
+                key={key}
+                dataKey={key}
+                name={formatLabel(key)}
+                fill={CHART_COLORS[idx % CHART_COLORS.length]}
+                radius={[4, 4, 0, 0]}
+                barSize={useGroupedBars ? 20 : 24}
+                stackId={stacked && useGroupedBars ? "stack1" : undefined}
+              />
             ))}
           </BarChart>
+        ) : type === "scatter" ? (
+          yKeys.length === 0 ? (
+            <div className="flex items-center justify-center h-[200px] text-muted-foreground text-sm">
+              Scatter requires numeric x and y columns
+            </div>
+          ) : (
+            <ScatterChart {...commonProps}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
+              <XAxis dataKey={xKey} type="number" axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
+              <YAxis type="number" hide={hideY} domain={yDomain} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
+              <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3" }} />
+              {refLine}
+              {yKeys.slice(0, 1).map((key, idx) => (
+                <Scatter key={key} name={formatLabel(key)} data={chartData} dataKey={[xKey, key]} fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+              ))}
+            </ScatterChart>
+          )
         ) : (
           <LineChart {...commonProps}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide domain={yDomain} />
+            <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
+            {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />}
             <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} />
-            {yKeys.map((key) => (
-              <Line key={key} type="monotone" dataKey={key} stroke="var(--primary)" strokeWidth={2} dot={false} connectNulls />
+            {refLine}
+            {(yKeys.length > 1 || yKeysRight.length > 0) && (
+              <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => formatLabel(value)} />
+            )}
+            {yKeys.map((key, idx) => (
+              <Line
+                key={key}
+                type="monotone"
+                dataKey={key}
+                stroke={CHART_COLORS[idx % CHART_COLORS.length]}
+                strokeWidth={2}
+                dot={false}
+                connectNulls
+              />
+            ))}
+            {yKeysRight.map((key, idx) => (
+              <Line
+                key={`right-${key}`}
+                type="monotone"
+                dataKey={key}
+                yAxisId="right"
+                stroke={CHART_COLORS[(yKeys.length + idx) % CHART_COLORS.length]}
+                strokeWidth={2}
+                strokeDasharray="4 4"
+                dot={false}
+                connectNulls
+              />
             ))}
           </LineChart>
         )}

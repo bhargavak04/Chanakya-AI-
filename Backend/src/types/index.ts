@@ -54,7 +54,7 @@ export interface TableWithColumns extends SchemaTable {
 }
 
 // --- LLM Structured Output (all chat modes) ---
-export type ChartType = "line" | "bar" | "area" | "pie" | "table";
+export type ChartType = "line" | "bar" | "area" | "pie" | "scatter" | "table";
 export type ChatMode = "analyze" | "forecast" | "simulate" | "diagnose" | "max";
 
 export interface ChartConfig {
@@ -63,6 +63,12 @@ export interface ChartConfig {
   y_axis: string[];
   group_by?: string[];
   time_granularity?: "day" | "week" | "month";
+  /** Stack bars when group_by present. Omit for simple bar charts. */
+  stacked?: boolean;
+  /** Secondary Y-axis columns (different scale). Use only when comparing metrics on different magnitudes. */
+  y_axis_right?: string[];
+  /** Target/threshold/breakeven line. Use only when user asks for target, breakeven, or threshold. */
+  reference_line?: { value: number; label?: string };
 }
 
 export interface LLMAnalyzeOutput {
@@ -91,7 +97,17 @@ export interface ChatResponseSuccess {
     db_source: string;
     query_time_ms: number;
     sql?: string;
+    /** Diagnose mode: all SQL queries run during investigation */
+    diagnostic_queries?: string[];
+    /** Diagnose mode: number of queries executed */
+    queries_executed?: number;
   };
+  /** Diagnose mode: root cause analysis summary */
+  diagnosis_summary?: string;
+  /** Diagnose mode: identified root causes */
+  root_causes?: string[];
+  /** Diagnose mode: actionable recommendations */
+  recommendations?: string[];
 }
 
 export interface ChatResponseError {

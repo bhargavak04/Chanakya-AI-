@@ -1,8 +1,13 @@
 /**
  * Schema retrieval for LLM context
- * Phase 1: Returns all tables (vector search can be added later)
+ * Uses vector search when Cohere + Qdrant are configured; otherwise returns all tables
  */
 import { getInternalDb } from "../db/internal.js";
+import {
+  isVectorEnabled,
+  embedTexts,
+  searchSchemaChunks,
+} from "../vector/index.js";
 import type { TableWithColumns } from "../../types/index.js";
 
 export function getSchemaForDb(dbId: string): TableWithColumns[] {
@@ -41,6 +46,32 @@ export function getSchemaForDb(dbId: string): TableWithColumns[] {
       description: c.description,
     })),
   }));
+}
+
+/** Get schema for LLM: vector search when enabled, else full schema */
+export async function getSchemaForQuery(
+  dbId: string,
+  userMessage: string
+): Promise<TableWithColumns[]> {
+  if (!isVectorEnabled()) {
+    return getSchemaForDb(dbId);
+  }
+
+  try {
+    const [queryVec] = await embedTexts([userMessage], "search_query");
+    const hits = await searchSchemaChunks(dbId, queryVec, 15);
+    const tableIds = [...new Set(hits.map((h) => h.tableId))];
+
+    if (tableIds.length === 0) {
+      return getSchemaForDb(dbId);
+    }
+
+    const all = getSchemaForDb(dbId);
+    const idSet = new Set(tableIds);
+    return all.filter((t) => idSet.has(t.id));
+  } catch {
+    return getSchemaForDb(dbId);
+  }
 }
 
 /** Format schema as compact text for LLM prompt */

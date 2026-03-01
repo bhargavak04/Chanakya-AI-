@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { Send, User, Bot, Loader2, BarChart3, TrendingUp, Calculator, Search, Zap } from "lucide-react";
+import { addBookmark, removeBookmark, isBookmarked, getBookmarkId } from "@/lib/bookmarks";
 import { ResponseBlock } from "./ResponseBlock";
 import { motion, AnimatePresence } from "framer-motion";
 import { api, isChatError, type ChatResponseSuccess } from "@/lib/api";
@@ -79,18 +80,26 @@ type Message =
   | { id: string; type: "ai"; content: string; error: string };
 
 interface ChatAreaProps {
-  onOpenChartCustomize?: () => void;
+  onOpenChartCustomize?: (messageId: string, response: ChatResponseSuccess) => void;
 }
 
 export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
-  const { activeDbId, conversationId, setConversationId, chartTypeOverride, loadDatabases } = useApp();
+  const { activeDbId, conversationId, setConversationId, chartTypeOverride, getChartConfigOverride, loadDatabases } = useApp();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [mode, setMode] = useState<ChatModeId>("analyze");
 
-  const LOADING_STEPS = ["Thinking...", "Running SQL...", "Fetching data...", "Analysing with vectors..."] as const;
+  const LOADING_STEPS_ANALYZE = ["Thinking...", "Running SQL...", "Fetching data...", "Analysing with vectors..."] as const;
+  const LOADING_STEPS_DIAGNOSE = [
+    "Thinking longer—this may take a minute...",
+    "Running diagnostic queries...",
+    "Investigating patterns across tables...",
+    "Identifying root causes...",
+    "Synthesising findings...",
+  ] as const;
+  const LOADING_STEPS = mode === "diagnose" ? LOADING_STEPS_DIAGNOSE : LOADING_STEPS_ANALYZE;
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -114,6 +123,23 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
   }, []);
 
   useEffect(() => {
+    const onUseBookmark = (e: Event) => {
+      const { question } = (e as CustomEvent<{ question: string }>).detail;
+      setInput(question);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener("chanakya:use-bookmark", onUseBookmark);
+    return () => window.removeEventListener("chanakya:use-bookmark", onUseBookmark);
+  }, []);
+
+  const [, setBookmarksVersion] = useState(0);
+  useEffect(() => {
+    const onUpdate = () => setBookmarksVersion((v) => v + 1);
+    window.addEventListener("chanakya:bookmarks-updated", onUpdate);
+    return () => window.removeEventListener("chanakya:bookmarks-updated", onUpdate);
+  }, []);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
@@ -127,9 +153,10 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
     setLoading(true);
     setLoadingStep(0);
 
+    const stepIntervalMs = mode === "diagnose" ? 3000 : 800;
     const stepInterval = setInterval(() => {
       setLoadingStep((s) => Math.min(s + 1, LOADING_STEPS.length - 1));
-    }, 800);
+    }, stepIntervalMs);
 
     try {
       const res = await api.chat({
@@ -226,7 +253,15 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
       )}
 
       <AnimatePresence>
-        {messages.map((message) => (
+        {messages.map((message, idx) => {
+          const userQuestion =
+            message.type === "ai" && "response" in message
+              ? messages[idx - 1]?.type === "user"
+                ? messages[idx - 1].content
+                : undefined
+              : undefined;
+
+          return (
           <motion.div
             key={message.id}
             initial={{ opacity: 0, y: 20 }}
@@ -261,8 +296,23 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
                     <ResponseBlock
                       response={message.response}
                       chartTypeOverride={chartTypeOverride ?? undefined}
+                      chartConfigOverride={getChartConfigOverride(message.id)}
                       hideInsights
-                      onOpenChartCustomize={onOpenChartCustomize}
+                      onOpenChartCustomize={onOpenChartCustomize ? () => onOpenChartCustomize(message.id, message.response) : undefined}
+                      bookmark={
+                        activeDbId && userQuestion
+                          ? {
+                              userQuestion,
+                              dbId: activeDbId,
+                              isBookmarked: isBookmarked(activeDbId, userQuestion),
+                              onToggle: () => {
+                                const id = getBookmarkId(activeDbId, userQuestion);
+                                if (id) removeBookmark(activeDbId, id);
+                                else addBookmark(activeDbId, userQuestion);
+                              },
+                            }
+                          : undefined
+                      }
                     />
                     {message.response.insights.length > 0 && (
                       <div className="text-[15px] leading-relaxed text-foreground/90 w-full">
@@ -278,7 +328,8 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
               </div>
             </div>
           </motion.div>
-        ))}
+          );
+        })}
       </AnimatePresence>
 
       {loading && (

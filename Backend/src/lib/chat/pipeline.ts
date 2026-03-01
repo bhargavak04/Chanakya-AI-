@@ -1,13 +1,20 @@
 /**
  * Chat pipeline - LLM -> Validate -> Execute -> Response
+ * Diagnose mode: multi-step agent loop
  */
 import { getLLMProvider } from "../llm/index.js";
 import { buildSystemPrompt, buildInsightPrompt } from "../llm/prompts.js";
-import { getSchemaForDb, formatSchemaForPrompt } from "../schema/retrieval.js";
+import { getSchemaForQuery, getSchemaForDb, formatSchemaForPrompt } from "../schema/retrieval.js";
 import { validateAndSanitize } from "../sql/validator.js";
 import { executeQuery } from "../sql/executor.js";
 import { getConnectionConfig } from "../db/connections.js";
 import { computeForecast, parseForecastDays } from "./forecast.js";
+import {
+  buildDiagnoseSystemPrompt,
+  buildDiagnoseStepPrompt,
+  parseDiagnoseStep,
+  MAX_DIAGNOSE_STEPS,
+} from "./diagnose.js";
 import type { LLMAnalyzeOutput, ChartConfig, ChatResponseSuccess, ChatResponseError, ConversationState } from "../../types/index.js";
 import type { DbType } from "../../types/index.js";
 
@@ -94,6 +101,133 @@ async function generateAiInsights(
 
 const LOG_PREFIX = "[CHAT]";
 
+async function runDiagnosePipeline(
+  dbId: string,
+  message: string,
+  config: { name: string; type: string }
+): Promise<ChatResponseSuccess | ChatResponseError> {
+  const tables = getSchemaForDb(dbId);
+  const schemaText = formatSchemaForPrompt(tables);
+  const systemPrompt = buildDiagnoseSystemPrompt(schemaText, config.type);
+  const llm = getLLMProvider();
+  const steps: { query: string; resultSummary: string }[] = [];
+  let lastRows: Record<string, unknown>[] = [];
+  let lastChart: ChartConfig = { type: "table", x_axis: "", y_axis: [] };
+  let totalQueryTimeMs = 0;
+  const allQueries: string[] = [];
+
+  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: message },
+  ];
+
+  for (let i = 0; i < MAX_DIAGNOSE_STEPS; i++) {
+    let content: string;
+    try {
+      const res = await llm.generate({
+        messages,
+        jsonMode: true,
+        temperature: 0.2,
+        maxTokens: 1024,
+      });
+      content = res.content;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "LLM request failed";
+      return { error: { type: "llm_error", message: msg } };
+    }
+
+    const parsed = parseDiagnoseStep(content);
+    if ("error" in parsed) {
+      return { error: { type: "invalid_query", message: parsed.error } };
+    }
+
+    if (parsed.action === "finish") {
+      const insights: string[] = [parsed.diagnosis_summary];
+      if (parsed.root_causes.length > 0) {
+        insights.push("", "Root causes:", ...parsed.root_causes.map((c) => `• ${c}`));
+      }
+      if (parsed.recommendations.length > 0) {
+        insights.push("", "Recommendations:", ...parsed.recommendations.map((r) => `• ${r}`));
+      }
+
+      return {
+        mode: "diagnose",
+        title: generateTitle(message, parsed.chart),
+        data: lastRows,
+        chart_config: lastRows.length > 0 ? parsed.chart : lastChart,
+        insights,
+        badges: [],
+        export: { csv_available: true, excel_available: true },
+        meta: {
+          db_source: config.name,
+          query_time_ms: totalQueryTimeMs,
+          sql: allQueries[allQueries.length - 1],
+          diagnostic_queries: allQueries,
+          queries_executed: allQueries.length,
+        },
+        diagnosis_summary: parsed.diagnosis_summary,
+        root_causes: parsed.root_causes,
+        recommendations: parsed.recommendations,
+      };
+    }
+
+    const validation = validateAndSanitize(parsed.query, config.type as DbType);
+    if (!validation.valid) {
+      steps.push({
+        query: parsed.query,
+        resultSummary: `Error: ${validation.error ?? "SQL validation failed"}. Fix the query and try again.`,
+      });
+      messages.push({ role: "assistant", content });
+      messages.push({ role: "user", content: buildDiagnoseStepPrompt(message, steps) });
+      continue;
+    }
+
+    allQueries.push(validation.sql!);
+    let rows: Record<string, unknown>[];
+    let queryTimeMs: number;
+    try {
+      const result = await executeQuery(dbId, validation.sql!);
+      rows = result.rows;
+      queryTimeMs = result.durationMs;
+      totalQueryTimeMs += queryTimeMs;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Query failed";
+      console.error(`${LOG_PREFIX} Diagnose query failed:`, err);
+      steps.push({ query: parsed.query, resultSummary: `Error: ${msg}` });
+      messages.push({ role: "assistant", content });
+      messages.push({ role: "user", content: buildDiagnoseStepPrompt(message, steps) });
+      continue;
+    }
+
+    lastRows = rows;
+    lastChart = parsed.chart;
+    const summary = buildDataSummary(rows, parsed.chart);
+    steps.push({ query: parsed.query, resultSummary: summary });
+    messages.push({ role: "assistant", content });
+    messages.push({ role: "user", content: buildDiagnoseStepPrompt(message, steps) });
+  }
+
+  return {
+    mode: "diagnose",
+    title: generateTitle(message, lastChart),
+    data: lastRows,
+    chart_config: lastChart,
+    insights: [
+      "Reached maximum diagnostic steps.",
+      lastRows.length > 0 ? buildDataSummary(lastRows, lastChart) : "No data to display.",
+    ],
+    badges: [],
+    export: { csv_available: true, excel_available: true },
+    meta: {
+      db_source: config.name,
+      query_time_ms: totalQueryTimeMs,
+      sql: allQueries[allQueries.length - 1],
+      diagnostic_queries: allQueries,
+      queries_executed: allQueries.length,
+    },
+  };
+}
+
 export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuccess | ChatResponseError> {
   const { dbId, message, mode = "analyze", conversationState } = input;
 
@@ -104,7 +238,15 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
     return { error: { type: "not_found", message: "Database not found" } };
   }
 
-  const tables = getSchemaForDb(dbId);
+  if (mode === "diagnose") {
+    const tables = getSchemaForDb(dbId);
+    if (tables.length === 0) {
+      return { error: { type: "no_schema", message: "Schema not ingested. Add database and run schema ingestion first." } };
+    }
+    return runDiagnosePipeline(dbId, message, config);
+  }
+
+  const tables = await getSchemaForQuery(dbId, message);
   if (tables.length === 0) {
     return { error: { type: "no_schema", message: "Schema not ingested. Add database and run schema ingestion first." } };
   }
@@ -151,6 +293,7 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
     queryTimeMs = result.durationMs;
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Query execution failed";
+    console.error(`${LOG_PREFIX} Query execution failed:`, err);
     return { error: { type: "query_error", message: msg } };
   }
 
@@ -162,6 +305,19 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
     y_axis: Array.isArray(parsed.chart.y_axis) ? parsed.chart.y_axis : [],
     group_by: parsed.chart.group_by,
     time_granularity: parsed.chart.time_granularity,
+    stacked: parsed.chart.stacked,
+    y_axis_right: Array.isArray(parsed.chart.y_axis_right) ? parsed.chart.y_axis_right : undefined,
+    reference_line:
+      parsed.chart.reference_line &&
+      typeof parsed.chart.reference_line === "object" &&
+      typeof (parsed.chart.reference_line as { value?: unknown }).value === "number"
+        ? {
+            value: (parsed.chart.reference_line as { value: number }).value,
+            label: typeof (parsed.chart.reference_line as { label?: unknown }).label === "string"
+              ? (parsed.chart.reference_line as { label: string }).label
+              : undefined,
+          }
+        : undefined,
   };
 
   let finalRows = rows;

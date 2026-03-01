@@ -34,20 +34,29 @@ ID/NAME RESOLUTION (critical):
 const chartRules = `
 CHART TYPE RULES:
 - Use "line" or "area" for time series
-- Use "bar" for categorical comparisons
+- Use "bar" for categorical comparisons. When comparing breakdowns (e.g. by status, category, type), include "group_by": ["column_name"] so each group gets distinct bars and a legend
 - Use "pie" for composition/parts of whole
-- Use "table" when user asks for raw data or list`;
+- Use "scatter" for correlation or x-y relationship (e.g. price vs quantity, two numeric dimensions)
+- Use "table" when user asks for raw data or list
+
+ADVANCED OPTIONS (use ONLY when the query warrants it; keep simple charts for simple queries):
+- "stacked": true - for bar with group_by when showing parts-of-whole (e.g. cumulative revenue by status). Omit for side-by-side comparison
+- "y_axis_right": ["column"] - when comparing metrics on very different scales (e.g. revenue in thousands vs count). Omit for same-scale metrics
+- "reference_line": { "value": number, "label": "Target" } - when user asks for target, breakeven, threshold, or benchmark. Omit otherwise`;
 
 const jsonStructure = (mode: ChatMode) => `
 {
   "mode": "${mode}",
   "query": "SELECT ... (valid SQL)",
   "chart": {
-    "type": "line" | "bar" | "area" | "pie" | "table",
+    "type": "line" | "bar" | "area" | "pie" | "scatter" | "table",
     "x_axis": "column_name",
     "y_axis": ["column1", "column2"],
     "group_by": ["optional_group_column"],
-    "time_granularity": "day" | "week" | "month" (if time series)
+    "time_granularity": "day" | "week" | "month" (if time series),
+    "stacked": true | false (optional, for bar with group_by),
+    "y_axis_right": ["column"] (optional, for dual-scale line/area),
+    "reference_line": { "value": number, "label": "string" } (optional)
   }
 }`;
 

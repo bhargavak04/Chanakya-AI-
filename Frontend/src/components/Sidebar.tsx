@@ -5,10 +5,9 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { toast } from 'sonner';
 import { 
-  PlusCircle, 
+  MessageSquare,
   FileText, 
   Database, 
-  Bell, 
   Settings, 
   Search,
   ChevronRight,
@@ -23,10 +22,9 @@ function showComingSoon() {
 }
 
 const navItems = [
-  { icon: PlusCircle, label: 'New Chat', key: 'chat', href: '/' },
+  { icon: MessageSquare, label: 'Chat', key: 'chat', href: '/' },
   { icon: FileText, label: 'Saved Reports', key: 'saved', href: '#' },
   { icon: Database, label: 'Data Sources', key: 'dataSources', href: '/data-sources' },
-  { icon: Bell, label: 'Alerts', key: 'alerts', href: '#' },
   { icon: Settings, label: 'Settings', key: 'settings', href: '#' },
 ];
 

@@ -1,11 +1,18 @@
 /**
  * Schema ingestion - fetch from user DB, store in internal SQLite
+ * Optionally embed schema + sample rows and upsert to Qdrant for vector retrieval
  */
 import pg from "pg";
 import mysql from "mysql2/promise";
 import { getConnectionConfig, getPool, isPostgres } from "../db/connections.js";
 import { getInternalDb, generateId } from "../db/internal.js";
-import type { DbType, SchemaTable, SchemaColumn } from "../../types/index.js";
+import {
+  deleteSchemaChunksForDb,
+  upsertSchemaChunks,
+  ensureCollection,
+  isVectorEnabled,
+  type SchemaChunk,
+} from "../vector/index.js";
 
 const PG_SCHEMA_QUERY = `
   SELECT 
@@ -42,6 +49,45 @@ const MYSQL_SCHEMA_QUERY = `
     AND t.table_type = 'BASE TABLE'
   ORDER BY t.table_name, c.ordinal_position
 `;
+
+const SAMPLE_ROW_LIMIT = 2;
+const TRUNCATE_VALUE_LEN = 80;
+
+function quoteTableName(tableName: string, postgres: boolean): string {
+  if (postgres) return `"${tableName.replace(/"/g, '""')}"`;
+  return `\`${tableName.replace(/`/g, "``")}\``;
+}
+
+function truncate(val: unknown): string {
+  if (val === null || val === undefined) return "null";
+  const s = String(val);
+  return s.length > TRUNCATE_VALUE_LEN ? s.slice(0, TRUNCATE_VALUE_LEN) + "…" : s;
+}
+
+async function fetchSampleRows(
+  dbId: string,
+  tableName: string,
+  postgres: boolean
+): Promise<Record<string, unknown>[]> {
+  const quoted = quoteTableName(tableName, postgres);
+  const sql = `SELECT * FROM ${quoted} LIMIT ${SAMPLE_ROW_LIMIT}`;
+
+  try {
+    if (postgres) {
+      const pool = getPool(dbId) as pg.Pool;
+      const result = await pool.query(sql);
+      const rows = (result.rows ?? []) as Record<string, unknown>[];
+      return rows;
+    } else {
+      const pool = getPool(dbId) as mysql.Pool;
+      const [rows] = await pool.query(sql);
+      const arr = Array.isArray(rows) ? rows : [rows];
+      return arr as Record<string, unknown>[];
+    }
+  } catch {
+    return [];
+  }
+}
 
 export async function ingestSchema(dbId: string): Promise<{ tables: number; columns: number }> {
   const config = getConnectionConfig(dbId);
@@ -84,10 +130,12 @@ export async function ingestSchema(dbId: string): Promise<{ tables: number; colu
 
   let tableCount = 0;
   let columnCount = 0;
+  const tableIdByTableName = new Map<string, string>();
 
   const transaction = internal.transaction(() => {
     for (const [tableName, cols] of tableMap) {
       const tableId = generateId();
+      tableIdByTableName.set(tableName, tableId);
       insertTable.run(tableId, dbId, tableName);
       tableCount++;
       for (const col of cols) {
@@ -106,6 +154,34 @@ export async function ingestSchema(dbId: string): Promise<{ tables: number; colu
   });
 
   transaction();
+
+  if (isVectorEnabled()) {
+    const postgres = isPostgres(dbId);
+    const chunks: SchemaChunk[] = [];
+
+    for (const [tableName, cols] of tableMap) {
+      const tableId = tableIdByTableName.get(tableName)!;
+      const colLines = cols.map(
+        (c) =>
+          `  - ${c.column_name} (${c.data_type})${c.is_primary_key ? " PK" : ""}${c.is_foreign_key ? " FK" : ""}`
+      );
+      let chunkText = `Table: ${tableName}\nColumns:\n${colLines.join("\n")}`;
+
+      const sampleRows = await fetchSampleRows(dbId, tableName, postgres);
+      if (sampleRows.length > 0) {
+        const sampleStr = sampleRows
+          .map((r) => Object.entries(r).map(([k, v]) => `${k}: ${truncate(v)}`).join(", "))
+          .join(" | ");
+        chunkText += `\nSample: ${sampleStr}`;
+      }
+
+      chunks.push({ tableId, tableName, text: chunkText });
+    }
+
+    await ensureCollection();
+    await deleteSchemaChunksForDb(dbId);
+    await upsertSchemaChunks(dbId, chunks);
+  }
 
   return { tables: tableCount, columns: columnCount };
 }

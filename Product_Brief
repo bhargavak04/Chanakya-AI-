@@ -1,0 +1,538 @@
+🧠 PRODUCT OVERVIEW
+
+AI-native, chat-first analytics engine.
+
+Core principle:
+
+LLM decides structure
+Backend computes numbers
+LLM explains
+UI renders deterministically
+
+Never let LLM:
+
+Do math
+
+Execute queries
+
+Touch DB directly
+
+Return unstructured output
+
+🏗 HIGH LEVEL ARCHITECTURE
+
+User
+→ Mode selected
+→ LLM (Structured JSON output)
+→ SQL Validator
+→ Query Executor
+→ Deterministic Analytics Layer
+→ Insight LLM
+→ Structured JSON response
+→ UI Renderer
+
+🎛 MODE SYSTEM
+
+Modes:
+
+Analyze
+
+Forecast
+
+Simulate
+
+Diagnose
+
+Max
+
+Each mode = separate system prompt + pipeline.
+
+No intent detection.
+Explicit mode selection.
+
+🗄 DATABASE CONNECTION SYSTEM
+🔹 When User Adds Database (FIRST TIME)
+
+Yes — you MUST analyze schema once and store it.
+
+This is critical.
+
+Schema Ingestion Process:
+
+When DB is connected:
+
+Query:
+
+information_schema.tables
+
+information_schema.columns
+
+primary keys
+
+foreign keys
+
+data types
+
+Store in your internal DB:
+
+tables:
+
+id
+
+db_id
+
+table_name
+
+description (nullable)
+
+row_count_estimate
+
+columns:
+
+id
+
+table_id
+
+column_name
+
+data_type
+
+is_nullable
+
+is_primary_key
+
+is_foreign_key
+
+description (nullable)
+
+Generate semantic summary using LLM:
+
+Describe what each table likely represents.
+
+Detect fact tables vs dimension tables.
+
+Detect time columns.
+
+Store that summary.
+
+🧠 How Schema Should Be Used Later
+
+DO NOT send full schema every query.
+
+Instead:
+
+Embed table + column descriptions.
+
+When user asks question:
+
+Embed user question.
+
+Retrieve top relevant tables via vector search.
+
+Send only those tables to LLM.
+
+This:
+
+Reduces tokens
+
+Improves SQL accuracy
+
+Prevents random joins
+
+🔐 SQL GUARDRAILS
+
+Never execute raw LLM SQL directly.
+
+SQL Validation Rules
+
+Allowed:
+
+SELECT only
+
+WITH (CTE)
+
+GROUP BY
+
+ORDER BY
+
+LIMIT
+
+Blocked:
+
+DROP
+
+DELETE
+
+UPDATE
+
+ALTER
+
+INSERT
+
+TRUNCATE
+
+GRANT
+
+REVOKE
+
+Also enforce:
+
+Automatic LIMIT 1000 (if none provided)
+
+Query timeout (e.g., 5 seconds)
+
+Read-only DB user
+
+Use SQL parser library.
+Never regex-only validation.
+
+🧾 STRUCTURED OUTPUT CONTRACT (CRITICAL)
+
+LLM must return ONLY JSON.
+
+No text.
+
+📦 JSON STRUCTURE — ANALYZE MODE
+
+{
+"mode": "analyze",
+"query": "SELECT ...",
+"chart": {
+"type": "line | bar | table | area",
+"x_axis": "date",
+"y_axis": ["revenue"],
+"group_by": ["venue_name"],
+"time_granularity": "day | week | month"
+},
+"metadata": {
+"requires_comparison": true,
+"requires_anomaly_detection": true
+}
+}
+
+📦 JSON STRUCTURE — FORECAST MODE
+
+{
+"mode": "forecast",
+"base_query": "SELECT date, revenue FROM ...",
+"forecast": {
+"period_days": 30,
+"method": "linear_regression | moving_average"
+},
+"chart": {
+"type": "line",
+"x_axis": "date",
+"y_axis": ["revenue"]
+}
+}
+
+📦 JSON STRUCTURE — SIMULATE MODE
+
+{
+"mode": "simulate",
+"baseline_query": "SELECT revenue FROM ...",
+"variables": {
+"occupancy_increase_percent": 15,
+"price_increase_percent": null,
+"membership_growth_percent": null
+}
+}
+
+📦 JSON STRUCTURE — DIAGNOSE MODE
+
+{
+"mode": "diagnose",
+"metric": "revenue",
+"period": "yesterday",
+"comparison_period": "previous_day",
+"breakdowns": ["venue", "sport", "revenue_type"]
+}
+
+Backend generates all required SQL automatically.
+
+📦 FINAL RESPONSE STRUCTURE TO UI
+
+Backend must return unified structure:
+
+{
+"mode": "analyze",
+"title": "Revenue Last 7 Days",
+"data": [...],
+"chart_config": {
+"type": "line",
+"x_axis": "date",
+"y_axis": ["revenue"]
+},
+"insights": [
+"Revenue decreased 12% vs previous period.",
+"Biggest drop from Venue X.",
+"Coaching revenue down 31%."
+],
+"badges": [
+{"type": "drop", "value": "-12%"},
+{"type": "anomaly", "value": "2.3σ below mean"}
+],
+"export": {
+"csv_available": true,
+"excel_available": true
+},
+"meta": {
+"db_source": "sportomic",
+"query_time_ms": 420
+}
+}
+
+UI renders purely from this JSON.
+
+No UI logic guessing.
+
+🧮 DETERMINISTIC ANALYTICS LAYER
+
+Backend must compute:
+
+Period Comparison
+
+(current - previous) / previous
+
+Moving Average
+
+7-day rolling
+
+Z-Score
+
+(value - mean) / std_dev
+
+Contributor Ranking
+
+Sort by delta contribution
+
+Forecast
+
+Linear regression:
+
+Compute slope
+
+Project forward
+
+LLM only explains results.
+
+🧠 CONVERSATION MEMORY SYSTEM
+
+You need 2 layers of memory:
+
+1️⃣ Short-Term Chat Memory
+
+Per conversation store:
+
+Last query
+
+Last filters
+
+Last date range
+
+Last DB context
+
+Example:
+
+User:
+“Show revenue in Bangalore”
+
+User:
+“Break that by sport”
+
+Second query should reuse:
+
+Same date range
+
+Same city filter
+
+Store conversation state as structured object:
+
+{
+"db": "sportomic",
+"filters": {
+"city": "Bangalore",
+"date_range": "last_7_days"
+},
+"last_metric": "revenue"
+}
+
+Send this context in system prompt every turn.
+
+2️⃣ Long-Term Memory
+
+Store:
+
+Saved reports
+
+User preferred date range
+
+Default DB
+
+Do not send full history to LLM.
+Summarize conversation context instead.
+
+🧠 SYSTEM PROMPT DESIGN PRINCIPLES
+
+Each mode gets separate system prompt.
+
+System prompt must:
+
+Instruct to output JSON only
+
+Forbid explanation text
+
+Forbid SQL mutations
+
+Restrict to provided schema
+
+Never hallucinate columns
+
+Example instruction:
+
+"You must only use provided tables and columns. If required column does not exist, return error JSON."
+
+🧩 SCHEMA ANALYSIS BEST PRACTICE
+
+Yes.
+
+Do full schema ingestion ONCE when DB is added.
+
+Store it.
+
+Update manually if schema changes.
+
+Do not re-fetch every query.
+
+For large DB:
+
+Cache schema in Redis
+
+Use vector search to fetch relevant tables
+
+This is scalable and clean.
+
+📤 EXPORT SYSTEM
+
+For each dataset:
+
+Backend supports:
+
+CSV generation
+
+Excel (.xlsx) generation
+
+Chart as PNG
+
+Excel best practice:
+
+Sheet 1: Data
+
+Sheet 2: Metadata (query, generated at, mode)
+
+🎨 UI RENDERING RULES
+
+Frontend never guesses.
+
+It receives:
+
+chart_config
+
+data
+
+insights
+
+badges
+
+export flags
+
+And renders accordingly.
+
+Each response block contains:
+
+Title
+
+Chart
+
+Insight summary
+
+Badges
+
+Export button
+
+Collapsible SQL
+
+Mode badge
+
+🚨 ERROR HANDLING CONTRACT
+
+If LLM fails:
+
+Return:
+
+{
+"error": {
+"type": "invalid_query",
+"message": "Column does not exist"
+}
+}
+
+UI shows clean error card.
+
+⚡ MAX MODE PIPELINE
+
+Max mode automatically:
+
+Generates SQL
+
+Runs comparison
+
+Runs anomaly detection
+
+Runs contributor ranking
+
+Runs forecast if timeseries
+
+Suggests actions
+
+It’s full AI analyst mode.
+
+🧠 FINAL BUILD PRINCIPLES
+
+LLM does structure.
+
+Backend does math.
+
+UI renders deterministic JSON.
+
+Schema stored once.
+
+Query validated always.
+
+Conversation state stored structurally.
+
+No free-form LLM output ever.
+
+🚀 WHAT YOU ARE BUILDING
+
+A structured AI business intelligence engine with:
+
+Multi-mode chat
+
+Schema-aware SQL generation
+
+Deterministic analytics layer
+
+Forecasting
+
+Simulation
+
+Root-cause analysis
+
+CSV + Excel export
+
+Memory
+
+Guardrails
+
+Linear-style UI

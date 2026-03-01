@@ -5,13 +5,23 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 export type ApiError = { message: string; details?: string };
 
-async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
+const CHAT_TIMEOUT_MS = 90000;
+const INGEST_TIMEOUT_MS = 120000;
+
+async function fetchApi<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
   const hasBody = init?.body != null;
   const headers: Record<string, string> = hasBody ? { "Content-Type": "application/json" } : {};
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timeoutId = controller
+    ? setTimeout(() => controller.abort(), timeoutMs)
+    : undefined;
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
+    signal: controller?.signal,
     headers: { ...headers, ...(init?.headers as Record<string, string>) },
   });
+  if (timeoutId) clearTimeout(timeoutId);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const err = body as { error?: string | { message?: string }; details?: string };
@@ -50,15 +60,16 @@ export const api = {
   deleteDatabase: (id: string) => fetchApi<{ deleted: string }>(`/api/databases/${id}`, { method: "DELETE" }),
 
   ingestSchema: (dbId: string) =>
-    fetchApi<{ tables: number; columns: number; dbId: string }>(`/api/schema/${dbId}/ingest`, {
-      method: "POST",
-      body: "{}",
-    }),
+    fetchApi<{ tables: number; columns: number; dbId: string }>(
+      `/api/schema/${dbId}/ingest`,
+      { method: "POST", body: "{}" },
+      INGEST_TIMEOUT_MS
+    ),
 
   getSchema: (dbId: string) => fetchApi<{ dbId: string; tables: unknown[] }>(`/api/schema/${dbId}`),
 
   chat: (body: { dbId: string; message: string; mode?: string; conversationId?: string }) =>
-    fetchApi<ChatResponse>("/api/chat", { method: "POST", body: JSON.stringify(body) }),
+    fetchApi<ChatResponse>("/api/chat", { method: "POST", body: JSON.stringify(body) }, CHAT_TIMEOUT_MS),
 
   exportCsv: async (data: Record<string, unknown>[], filename: string): Promise<Blob> => {
     const res = await fetch(`${API_BASE}/api/export/csv`, {
@@ -72,11 +83,14 @@ export const api = {
 };
 
 export type ChartConfig = {
-  type: "line" | "bar" | "area" | "pie" | "table";
+  type: "line" | "bar" | "area" | "pie" | "scatter" | "table";
   x_axis: string;
   y_axis: string[];
   group_by?: string[];
   time_granularity?: string;
+  stacked?: boolean;
+  y_axis_right?: string[];
+  reference_line?: { value: number; label?: string };
 };
 
 export type ChatResponseSuccess = {
@@ -87,8 +101,17 @@ export type ChatResponseSuccess = {
   insights: string[];
   badges: { type: string; value: string }[];
   export: { csv_available: boolean; excel_available: boolean };
-  meta: { db_source: string; query_time_ms: number; sql?: string };
+  meta: {
+    db_source: string;
+    query_time_ms: number;
+    sql?: string;
+    diagnostic_queries?: string[];
+    queries_executed?: number;
+  };
   conversationId?: string;
+  diagnosis_summary?: string;
+  root_causes?: string[];
+  recommendations?: string[];
 };
 
 export type ChatResponseError = { error: { type: string; message: string } };
