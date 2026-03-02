@@ -1,6 +1,6 @@
 /**
  * Schema ingestion - fetch from user DB, store in internal SQLite
- * Optionally embed schema + sample rows and upsert to Qdrant for vector retrieval
+ * Generates LLM descriptions for tables; optionally embeds schema + sample rows to Qdrant
  */
 import pg from "pg";
 import mysql from "mysql2/promise";
@@ -13,6 +13,7 @@ import {
   isVectorEnabled,
   type SchemaChunk,
 } from "../vector/index.js";
+import { getLLMProvider } from "../llm/index.js";
 
 const PG_SCHEMA_QUERY = `
   SELECT 
@@ -52,6 +53,52 @@ const MYSQL_SCHEMA_QUERY = `
 
 const SAMPLE_ROW_LIMIT = 2;
 const TRUNCATE_VALUE_LEN = 80;
+
+type RawCol = { table_name: string; column_name: string; data_type: string; is_nullable: boolean; is_primary_key: boolean; is_foreign_key: boolean };
+
+/** Call LLM to generate one-line descriptions for each table. Returns map of table_name -> description. */
+async function generateTableDescriptions(
+  tableMap: Map<string, RawCol[]>
+): Promise<Map<string, string>> {
+  const tableNames = [...tableMap.keys()];
+  if (tableNames.length === 0) return new Map();
+
+  const schemaSummary = tableNames
+    .map(
+      (tn) =>
+        `- ${tn}: ${tableMap.get(tn)!.map((c) => `${c.column_name} (${c.data_type})${c.is_primary_key ? " PK" : ""}${c.is_foreign_key ? " FK" : ""}`).join(", ")}`
+    )
+    .join("\n");
+
+  const prompt = `Given this database schema, write a one-line description (max 80 chars) for each table describing what it likely stores. Output JSON only: {"table_name": "description", ...}
+
+Schema:
+${schemaSummary}`;
+
+  try {
+    const llm = getLLMProvider();
+    const result = await llm.generate({
+      messages: [
+        { role: "system", content: "You are a database analyst. Output only valid JSON." },
+        { role: "user", content: prompt },
+      ],
+      jsonMode: true,
+      temperature: 0.2,
+    });
+
+    const parsed = JSON.parse(result.content) as Record<string, string>;
+    const map = new Map<string, string>();
+    for (const tn of tableNames) {
+      const desc = parsed[tn];
+      if (typeof desc === "string" && desc.trim().length > 0) {
+        map.set(tn, desc.trim().slice(0, 500));
+      }
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
 
 function quoteTableName(tableName: string, postgres: boolean): string {
   if (postgres) return `"${tableName.replace(/"/g, '""')}"`;
@@ -155,17 +202,25 @@ export async function ingestSchema(dbId: string): Promise<{ tables: number; colu
 
   transaction();
 
+  const descriptions = await generateTableDescriptions(tableMap);
+  const updateDesc = internal.prepare("UPDATE schema_tables SET description = ? WHERE id = ?");
+  for (const [tableName, tableId] of tableIdByTableName) {
+    const desc = descriptions.get(tableName);
+    if (desc) updateDesc.run(desc, tableId);
+  }
+
   if (isVectorEnabled()) {
     const postgres = isPostgres(dbId);
     const chunks: SchemaChunk[] = [];
 
     for (const [tableName, cols] of tableMap) {
       const tableId = tableIdByTableName.get(tableName)!;
+      const desc = descriptions.get(tableName);
       const colLines = cols.map(
         (c) =>
           `  - ${c.column_name} (${c.data_type})${c.is_primary_key ? " PK" : ""}${c.is_foreign_key ? " FK" : ""}`
       );
-      let chunkText = `Table: ${tableName}\nColumns:\n${colLines.join("\n")}`;
+      let chunkText = `Table: ${tableName}${desc ? ` (${desc})` : ""}\nColumns:\n${colLines.join("\n")}`;
 
       const sampleRows = await fetchSampleRows(dbId, tableName, postgres);
       if (sampleRows.length > 0) {
