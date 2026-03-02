@@ -2,9 +2,13 @@
  * Generate and download HTML report: chart + table + AI insights
  */
 import type { ChatResponseSuccess, ChartConfig } from "./api";
+import type { ChartConfigOverride } from "@/context/AppContext";
 import { createRoot } from "react-dom/client";
 import React from "react";
 import { DynamicChart } from "@/components/charts/DynamicChart";
+
+const REPORT_CHART_WIDTH = 600;
+const REPORT_CHART_HEIGHT = 360;
 
 function formatCell(v: unknown): string {
   if (v == null) return "—";
@@ -40,11 +44,11 @@ function buildTableHtml(data: Record<string, unknown>[]): string {
 
 async function captureChartAsSvg(
   data: Record<string, unknown>[],
-  config: ChartConfig
+  config: ChartConfig,
+  options?: { showYAxis?: boolean }
 ): Promise<string> {
   const container = document.createElement("div");
-  container.style.cssText =
-    "position:fixed;left:-9999px;top:0;width:600px;height:280px;background:#0a0a0a;";
+  container.style.cssText = `position:fixed;left:-9999px;top:0;width:${REPORT_CHART_WIDTH}px;height:${REPORT_CHART_HEIGHT}px;background:#0a0a0a;`;
   document.body.appendChild(container);
 
   const chartConfig: ChartConfig =
@@ -57,6 +61,8 @@ async function captureChartAsSvg(
         data,
         config: chartConfig,
         className: "report-chart",
+        showYAxis: options?.showYAxis ?? false,
+        reportMode: true,
       })
     );
 
@@ -64,8 +70,8 @@ async function captureChartAsSvg(
       const svg = container.querySelector("svg");
       if (svg) {
         const clone = svg.cloneNode(true) as SVGElement;
-        clone.setAttribute("width", "600");
-        clone.setAttribute("height", "280");
+        clone.setAttribute("width", String(REPORT_CHART_WIDTH));
+        clone.setAttribute("height", String(REPORT_CHART_HEIGHT));
         resolve(clone.outerHTML);
       } else {
         resolve("");
@@ -74,19 +80,29 @@ async function captureChartAsSvg(
       container.remove();
     };
 
-    setTimeout(extractSvg, 600);
+    setTimeout(extractSvg, 800);
   });
 }
 
-export async function downloadReport(response: ChatResponseSuccess): Promise<void> {
+export interface DownloadReportOptions {
+  /** Use customized chart config (axes, type, showYAxis) instead of LLM default */
+  chartConfig?: ChartConfig & ChartConfigOverride;
+}
+
+export async function downloadReport(
+  response: ChatResponseSuccess,
+  options?: DownloadReportOptions
+): Promise<void> {
   const { title, data, chart_config, insights, meta } = response;
 
   const chartConfigForReport: ChartConfig =
-    chart_config.type === "table"
-      ? { ...chart_config, type: "bar" }
-      : chart_config;
+    (options?.chartConfig ?? chart_config).type === "table"
+      ? { ...(options?.chartConfig ?? chart_config), type: "bar" }
+      : (options?.chartConfig ?? chart_config);
 
-  const chartSvg = await captureChartAsSvg(data, chartConfigForReport);
+  const chartSvg = await captureChartAsSvg(data, chartConfigForReport, {
+    showYAxis: options?.chartConfig?.showYAxis ?? false,
+  });
 
   const chartSection = chartSvg
     ? `<div style="margin-bottom:24px"><h3 style="font-size:14px;color:#888;margin-bottom:8px">Chart</h3><div style="background:#0a0a0a;padding:16px;border-radius:8px">${chartSvg}</div></div>`
@@ -108,7 +124,7 @@ export async function downloadReport(response: ChatResponseSuccess): Promise<voi
   <style>
     :root { --primary: #6366f1; --border: rgba(255,255,255,0.1); --muted-foreground: #94a3b8; --background: #0a0a0a; --chart-1: #6366f1; --chart-2: #22d3ee; --chart-3: #a78bfa; --chart-4: #fbbf24; --chart-5: #f472b6; }
     body { font-family: system-ui, sans-serif; background: #0a0a0a; color: #e5e5e5; padding: 24px; max-width: 800px; margin: 0 auto; }
-    h1 { font-size: 18px; margin-bottom: 8px; }
+    h1 { font-size: 18px; margin-bottom: 8px; word-wrap: break-word; overflow-wrap: break-word; max-width: 100%; }
     .meta { font-size: 12px; color: #888; margin-bottom: 24px; }
     table { color: #e5e5e5; }
     th { background: #1a1a1a; color: #888; text-align: left; }

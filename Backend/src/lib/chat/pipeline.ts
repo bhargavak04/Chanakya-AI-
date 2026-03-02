@@ -100,6 +100,15 @@ async function generateAiInsights(
 }
 
 const LOG_PREFIX = "[CHAT]";
+const MAX_SQL_ATTEMPTS = 2;
+
+function formatQueryError(err: unknown): string {
+  const e = err as { message?: string; detail?: string; hint?: string };
+  let msg = (e?.message as string) ?? "Query execution failed";
+  if (e?.detail) msg += `\nDetail: ${e.detail}`;
+  if (e?.hint) msg += `\nHint: ${e.hint}`;
+  return msg;
+}
 
 async function runDiagnosePipeline(
   dbId: string,
@@ -272,12 +281,12 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
 
   console.log(`${LOG_PREFIX} LLM raw output:`, llmResult.content);
 
-  const parsed = parseLLMOutput(llmResult.content);
+  let parsed = parseLLMOutput(llmResult.content);
   if ("error" in parsed) {
     return { error: { type: "invalid_query", message: parsed.error } };
   }
 
-  const validation = validateAndSanitize(parsed.query, config.type as DbType);
+  let validation = validateAndSanitize(parsed.query, config.type as DbType);
   if (!validation.valid) {
     return { error: { type: "invalid_sql", message: validation.error ?? "SQL validation failed" } };
   }
@@ -287,15 +296,63 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
 
   let rows: Record<string, unknown>[];
   let queryTimeMs: number;
-  try {
-    const result = await executeQuery(dbId, validation.sql!);
-    rows = result.rows;
-    queryTimeMs = result.durationMs;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Query execution failed";
-    console.error(`${LOG_PREFIX} Query execution failed:`, err);
-    return { error: { type: "query_error", message: msg } };
+  let currentParsed = parsed;
+  let currentValidation = validation;
+
+  for (let attempt = 1; attempt <= MAX_SQL_ATTEMPTS; attempt++) {
+    try {
+      const result = await executeQuery(dbId, currentValidation.sql!);
+      rows = result.rows;
+      queryTimeMs = result.durationMs;
+      break;
+    } catch (err) {
+      const formattedError = formatQueryError(err);
+      console.error(`${LOG_PREFIX} Query attempt ${attempt}/${MAX_SQL_ATTEMPTS} failed:`, formattedError);
+
+      if (attempt >= MAX_SQL_ATTEMPTS) {
+        return { error: { type: "query_error", message: formattedError } };
+      }
+
+      const retryUserContent = `Your previous SQL failed. Fix it and return valid JSON with the corrected query.
+
+Failed SQL:
+${currentValidation.sql}
+
+Error:
+${formattedError}
+
+Return the corrected JSON (mode, query, chart) with a fixed query.`;
+      try {
+        const retryResult = await llm.generate({
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: message },
+            { role: "user", content: retryUserContent },
+          ],
+          jsonMode: true,
+          temperature: 0.1,
+        });
+        console.log(`${LOG_PREFIX} LLM retry output:`, retryResult.content);
+        const retryParsed = parseLLMOutput(retryResult.content);
+        if ("error" in retryParsed) {
+          return { error: { type: "invalid_query", message: retryParsed.error } };
+        }
+        const retryValidation = validateAndSanitize(retryParsed.query, config.type as DbType);
+        if (!retryValidation.valid) {
+          return { error: { type: "invalid_sql", message: retryValidation.error ?? "SQL validation failed" } };
+        }
+        currentParsed = retryParsed;
+        currentValidation = retryValidation;
+        console.log(`${LOG_PREFIX} SQL retry generated:`, currentValidation.sql);
+      } catch (retryErr) {
+        const msg = retryErr instanceof Error ? retryErr.message : "LLM retry failed";
+        return { error: { type: "llm_error", message: msg } };
+      }
+    }
   }
+
+  parsed = currentParsed;
+  validation = currentValidation;
 
   console.log(`${LOG_PREFIX} Results: rows=${rows.length}, head=`, JSON.stringify(rows.slice(0, 5), null, 2));
 

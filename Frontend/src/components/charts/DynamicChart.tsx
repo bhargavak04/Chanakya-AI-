@@ -79,11 +79,14 @@ interface DynamicChartProps {
   className?: string;
   /** When true, show Y-axis scale labels. Default false; enable via Customize. */
   showYAxis?: boolean;
+  /** When true, use larger height and margins (for report export to avoid clipping) */
+  reportMode?: boolean;
 }
 
-export function DynamicChart({ data, config, className = "", showYAxis = false }: DynamicChartProps) {
+export function DynamicChart({ data, config, className = "", showYAxis = false, reportMode = false }: DynamicChartProps) {
   const { type, x_axis, y_axis, group_by, stacked, y_axis_right, reference_line } = config;
   const hideY = !showYAxis;
+  const chartHeight = reportMode ? 340 : 200;
 
   if (type === "table") {
     const formatCell = (v: unknown): string => {
@@ -236,7 +239,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false }
     };
 
     return (
-      <ResponsiveContainer width="100%" height={200} className={className}>
+      <ResponsiveContainer width="100%" height={chartHeight} className={className}>
         <PieChart margin={{ top: 10, right: 10, left: 10, bottom: 10 }}>
           <Pie
             data={pieData}
@@ -264,7 +267,9 @@ export function DynamicChart({ data, config, className = "", showYAxis = false }
     );
   }
 
-  const chartMargin = { top: 10, right: 10, left: hideY ? 0 : 40, bottom: 0 };
+  const chartMargin = reportMode
+    ? { top: 24, right: 16, left: hideY ? 0 : 48, bottom: 24 }
+    : { top: 10, right: 10, left: hideY ? 0 : 40, bottom: 0 };
 
   const refLine =
     reference_line && typeof reference_line.value === "number" ? (
@@ -280,13 +285,13 @@ export function DynamicChart({ data, config, className = "", showYAxis = false }
   const commonProps = {
     data: chartData,
     margin: chartMargin,
-    style: { minHeight: 200 },
+    style: { minHeight: chartHeight },
   };
 
   const gridStyle = { strokeDasharray: "3 3", stroke: "var(--border)", opacity: 0.5 };
 
   return (
-    <div className={`h-[200px] w-full ${className}`}>
+    <div className={`w-full ${className}`} style={{ height: chartHeight }}>
       <ResponsiveContainer width="100%" height="100%">
         {type === "area" ? (
           <AreaChart {...commonProps}>
@@ -312,6 +317,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false }
                 fill={CHART_COLORS[idx % CHART_COLORS.length]}
                 fillOpacity={0.2}
                 connectNulls
+                isAnimationActive={!reportMode}
               />
             ))}
             {yKeysRight.map((key, idx) => (
@@ -325,6 +331,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false }
                 fill={CHART_COLORS[(yKeys.length + idx) % CHART_COLORS.length]}
                 fillOpacity={0.15}
                 connectNulls
+                isAnimationActive={!reportMode}
               />
             ))}
           </AreaChart>
@@ -387,6 +394,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false }
                 strokeWidth={2}
                 dot={false}
                 connectNulls
+                isAnimationActive={!reportMode}
               />
             ))}
             {yKeysRight.map((key, idx) => (
@@ -400,6 +408,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false }
                 strokeDasharray="4 4"
                 dot={false}
                 connectNulls
+                isAnimationActive={!reportMode}
               />
             ))}
           </LineChart>

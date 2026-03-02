@@ -60,6 +60,12 @@ export function ResponseBlock({ response, chartTypeOverride, chartConfigOverride
       }
     : baseConfig;
 
+  const reportChartConfig: ChartConfig & ChartConfigOverride = {
+    ...effectiveChartConfig,
+    type: effectiveChartConfig.type === "table" ? "bar" : effectiveChartConfig.type,
+    ...(chartConfigOverride && { showYAxis: chartConfigOverride.showYAxis }),
+  };
+
   const handleExportCsv = async () => {
     try {
       const blob = await api.exportCsv(data, title.replace(/\W+/g, "_").slice(0, 50));
@@ -78,7 +84,7 @@ export function ResponseBlock({ response, chartTypeOverride, chartConfigOverride
   const handleDownloadReport = async () => {
     setReportLoading(true);
     try {
-      await downloadReport(response);
+      await downloadReport(response, { chartConfig: reportChartConfig });
     } finally {
       setReportLoading(false);
     }
