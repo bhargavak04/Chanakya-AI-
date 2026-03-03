@@ -55,6 +55,42 @@ const axisStyle = {
   fontSize: 10,
 };
 
+const CURRENCY_PATTERNS: { pattern: RegExp; symbol: string }[] = [
+  { pattern: /\b(usd|dollar|us_dollar)\b/i, symbol: "$" },
+  { pattern: /\b(eur|euro)\b/i, symbol: "€" },
+  { pattern: /\b(gbp|pound)\b/i, symbol: "£" },
+  {
+    pattern:
+      /\b(inr|rupee|rs|amount|revenue|price|cost|salary|income|profit|fee|payment|balance|total|value)\b/i,
+    symbol: "₹",
+  },
+];
+
+function detectCurrencySymbol(columnName: string): string | null {
+  const lower = columnName.toLowerCase();
+  for (const { pattern, symbol } of CURRENCY_PATTERNS) {
+    if (pattern.test(lower)) return symbol;
+  }
+  return null;
+}
+
+/** Format numbers for chart labels/tooltips: compact above 5 digits, currency prefix when applicable */
+function formatChartValue(value: unknown, columnName?: string): string {
+  if (value == null) return "—";
+  const num = Number(value);
+  if (Number.isNaN(num)) return String(value);
+
+  const symbol = columnName ? detectCurrencySymbol(columnName) : null;
+  const prefix = symbol ?? "";
+
+  const abs = Math.abs(num);
+  if (abs >= 1e9) return `${prefix}${(num / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${prefix}${(num / 1e6).toFixed(2)}M`;
+  if (abs >= 10000) return `${prefix}${(num / 1000).toFixed(2)}K`;
+  if (Number.isInteger(num)) return `${prefix}${num.toLocaleString()}`;
+  return `${prefix}${num.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 })}`;
+}
+
 function formatAxisTick(value: unknown): string {
   if (value == null) return "";
   const s = String(value);
@@ -153,13 +189,24 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
   const yKeysRight = matchedYRight.filter((k) => !yKeys.includes(k));
   const formatLabel = (k: string) => k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
+  const formatYAxisTick = (v: number, keys: string[]) =>
+    formatChartValue(v, keys[0]);
+
   // Bar with group_by: pivot so each group value becomes a series (colored bar with legend)
   const groupKey = group_by?.[0] ? findKey(group_by[0]) : null;
   const useGroupedBars = type === "bar" && groupKey && yKeys.length > 0;
+  // Bar with single row + multiple metrics: pivot so each metric is a bar with a label (fixes x-axis showing raw numbers)
+  const useComparisonBars = type === "bar" && !useGroupedBars && data.length === 1 && yKeys.length > 1;
   let barChartData: Record<string, unknown>[] = data;
   let barSeriesKeys: string[] = yKeys;
+  let barXKey = xKey;
 
-  if (useGroupedBars) {
+  if (useComparisonBars) {
+    const row = data[0];
+    barChartData = yKeys.map((k) => ({ name: formatLabel(k), value: Number(row?.[k]) ?? 0, _column: k }));
+    barSeriesKeys = ["value"];
+    barXKey = "name";
+  } else if (useGroupedBars) {
     const valueKey = yKeys[0];
     const groupValues = [...new Set(data.map((r) => String(r[groupKey!] ?? "").trim()))].filter(Boolean);
     if (groupValues.length > 0) {
@@ -211,11 +258,11 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
   const yDomainRight = (isLineOrArea || isScatter) && yKeysRight.length > 0 ? calcDomain(yKeysRight) : undefined;
 
   if (type === "pie") {
-    let pieData: { name: string; value: number }[];
+    let pieData: { name: string; value: number; _column?: string }[];
     if (data.length === 1 && yKeys.length > 0) {
       const row = data[0];
       pieData = yKeys
-        .map((k) => ({ name: formatLabel(k), value: Number(row?.[k]) || 0 }))
+        .map((k) => ({ name: formatLabel(k), value: Number(row?.[k]) || 0, _column: k }))
         .filter((d) => d.value > 0);
     } else {
       const nameKey = group_by?.[0] ?? xKey;
@@ -223,17 +270,19 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
       pieData = data.map((r) => ({
         name: String(r[nameKey] ?? r[xKey] ?? ""),
         value: Number(r[valueKey]) || 0,
+        _column: valueKey,
       })).filter((d) => d.value > 0);
     }
     if (pieData.length === 0) pieData = [{ name: "No data", value: 1 }];
 
-    const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: { name: string; value: number }[] }) => {
+    const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: { payload?: { name: string; value: number; _column?: string } }[] }) => {
       if (!active || !payload?.length) return null;
-      const p = payload[0].payload;
+      const p = payload[0]?.payload ?? payload[0];
+      const col = "_column" in p ? p._column : undefined;
       return (
         <div style={tooltipStyle}>
-          <div style={{ fontWeight: 600 }}>{p.name}</div>
-          <div style={{ opacity: 0.9, marginTop: 2 }}>{Number(p.value).toLocaleString()}</div>
+          <div style={{ fontWeight: 600 }}>{"name" in p ? p.name : ""}</div>
+          <div style={{ opacity: 0.9, marginTop: 2 }}>{formatChartValue("value" in p ? p.value : 0, col)}</div>
         </div>
       );
     };
@@ -303,9 +352,9 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
             </defs>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
-            {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />}
-            <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} />
+            <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => formatYAxisTick(v, yKeys)} tick={axisStyle} width={40} />
+            {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => formatYAxisTick(v, yKeysRight)} tick={axisStyle} width={40} />}
+            <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} formatter={(value: unknown, name: string) => [formatChartValue(value, name), formatLabel(name)]} />
             {refLine}
             {yKeys.map((key, idx) => (
               <Area
@@ -338,24 +387,49 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
         ) : type === "bar" ? (
           <BarChart {...commonProps} data={barChartData}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-            <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide={hideY} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
-            <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--secondary)", opacity: 0.5 }} formatter={(value: unknown, name: string) => [typeof value === "number" ? value.toLocaleString() : value, formatLabel(name)]} />
-            {(barSeriesKeys.length > 1 || useGroupedBars) && (
+            <XAxis dataKey={barXKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={useComparisonBars ? (v: unknown) => String(v) : formatAxisTick} />
+            <YAxis hide={hideY} tickFormatter={(v) => formatYAxisTick(v, useComparisonBars ? yKeys : useGroupedBars ? yKeys : barSeriesKeys)} tick={axisStyle} width={40} />
+            <Tooltip
+              contentStyle={tooltipStyle}
+              cursor={{ fill: "var(--secondary)", opacity: 0.5 }}
+              formatter={(value: unknown, name: string, item: { payload?: { _column?: string; name?: string } }) => {
+                const col = useComparisonBars ? item?.payload?._column : useGroupedBars ? yKeys[0] : name;
+                const label = useComparisonBars ? item?.payload?.name : formatLabel(name);
+                return [formatChartValue(value, col), label];
+              }}
+            />
+            {useComparisonBars ? (
+              <Legend
+                wrapperStyle={{ fontSize: 11 }}
+                payload={barChartData.map((entry, i) => ({
+                  value: (entry as { name: string }).name,
+                  type: "square",
+                  color: CHART_COLORS[i % CHART_COLORS.length],
+                }))}
+              />
+            ) : (barSeriesKeys.length > 1 || useGroupedBars) && (
               <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => formatLabel(value)} />
             )}
             {refLine}
-            {barSeriesKeys.map((key, idx) => (
-              <Bar
-                key={key}
-                dataKey={key}
-                name={formatLabel(key)}
-                fill={CHART_COLORS[idx % CHART_COLORS.length]}
-                radius={[4, 4, 0, 0]}
-                barSize={useGroupedBars ? 20 : 24}
-                stackId={stacked && useGroupedBars ? "stack1" : undefined}
-              />
-            ))}
+            {useComparisonBars ? (
+              <Bar dataKey="value" name="value" radius={[4, 4, 0, 0]} barSize={24}>
+                {barChartData.map((entry, idx) => (
+                  <Cell key={idx} fill={CHART_COLORS[idx % CHART_COLORS.length]} />
+                ))}
+              </Bar>
+            ) : (
+              barSeriesKeys.map((key, idx) => (
+                <Bar
+                  key={key}
+                  dataKey={key}
+                  name={formatLabel(key)}
+                  fill={CHART_COLORS[idx % CHART_COLORS.length]}
+                  radius={[4, 4, 0, 0]}
+                  barSize={useGroupedBars ? 20 : 24}
+                  stackId={stacked && useGroupedBars ? "stack1" : undefined}
+                />
+              ))
+            )}
           </BarChart>
         ) : type === "scatter" ? (
           yKeys.length === 0 ? (
@@ -366,8 +440,8 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
             <ScatterChart {...commonProps}>
               <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
               <XAxis dataKey={xKey} type="number" axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-              <YAxis type="number" hide={hideY} domain={yDomain} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
-              <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3" }} />
+              <YAxis type="number" hide={hideY} domain={yDomain} tickFormatter={(v) => formatYAxisTick(v, yKeys)} tick={axisStyle} width={40} />
+              <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3" }} formatter={(value: unknown, name: string) => [formatChartValue(value, name), formatLabel(name)]} />
               {refLine}
               {yKeys.slice(0, 1).map((key, idx) => (
                 <Scatter key={key} name={formatLabel(key)} data={chartData} dataKey={[xKey, key]} fill={CHART_COLORS[idx % CHART_COLORS.length]} />
@@ -378,9 +452,9 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
           <LineChart {...commonProps}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
             <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
-            <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />
-            {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => (v >= 1000000 ? `${(v / 1e6).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(1)}K` : String(v))} tick={axisStyle} width={40} />}
-            <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} />
+            <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => formatYAxisTick(v, yKeys)} tick={axisStyle} width={40} />
+            {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => formatYAxisTick(v, yKeysRight)} tick={axisStyle} width={40} />}
+            <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} formatter={(value: unknown, name: string) => [formatChartValue(value, name), formatLabel(name)]} />
             {refLine}
             {(yKeys.length > 1 || yKeysRight.length > 0) && (
               <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => formatLabel(value)} />
