@@ -4,6 +4,9 @@
  */
 import pg from "pg";
 import mysql from "mysql2/promise";
+import { SAMPLE_ROW_LIMIT, TRUNCATE_VALUE_LEN } from "../../core/constants.js";
+import { PROMPT_SCHEMA_DESCRIPTIONS, PROMPT_SCHEMA_SYSTEM } from "../../core/prompts.js";
+import { ERR_DB_NOT_FOUND } from "../../core/strings.js";
 import { getConnectionConfig, getPool, isPostgres } from "../db/connections.js";
 import { getInternalDb, generateId } from "../db/internal.js";
 import {
@@ -51,9 +54,6 @@ const MYSQL_SCHEMA_QUERY = `
   ORDER BY t.table_name, c.ordinal_position
 `;
 
-const SAMPLE_ROW_LIMIT = 2;
-const TRUNCATE_VALUE_LEN = 80;
-
 type RawCol = { table_name: string; column_name: string; data_type: string; is_nullable: boolean; is_primary_key: boolean; is_foreign_key: boolean };
 
 /** Call LLM to generate one-line descriptions for each table. Returns map of table_name -> description. */
@@ -70,16 +70,13 @@ async function generateTableDescriptions(
     )
     .join("\n");
 
-  const prompt = `Given this database schema, write a one-line description (max 80 chars) for each table describing what it likely stores. Output JSON only: {"table_name": "description", ...}
-
-Schema:
-${schemaSummary}`;
+  const prompt = `${PROMPT_SCHEMA_DESCRIPTIONS}${schemaSummary}`;
 
   try {
     const llm = getLLMProvider();
     const result = await llm.generate({
       messages: [
-        { role: "system", content: "You are a database analyst. Output only valid JSON." },
+        { role: "system", content: PROMPT_SCHEMA_SYSTEM },
         { role: "user", content: prompt },
       ],
       jsonMode: true,
@@ -138,7 +135,7 @@ async function fetchSampleRows(
 
 export async function ingestSchema(dbId: string): Promise<{ tables: number; columns: number }> {
   const config = getConnectionConfig(dbId);
-  if (!config) throw new Error(`Database ${dbId} not found`);
+  if (!config) throw new Error(ERR_DB_NOT_FOUND(dbId));
 
   const internal = getInternalDb();
 

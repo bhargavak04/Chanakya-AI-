@@ -3,6 +3,13 @@
  * One active connection per db_id, pooled
  */
 import pg from "pg";
+import {
+  DB_CONNECTION_TIMEOUT_MS,
+  DB_IDLE_TIMEOUT_MS,
+  DB_POOL_MAX,
+  DB_QUEUE_LIMIT,
+} from "../../core/constants.js";
+import { ERR_CONNECTION_FAILED, ERR_DB_NOT_FOUND } from "../../core/strings.js";
 import mysql from "mysql2/promise";
 import type { DbType, DatabaseConnection } from "../../types/index.js";
 import { getInternalDb } from "./internal.js";
@@ -49,9 +56,9 @@ function getPgPool(config: DatabaseConnection): pg.Pool {
       user: config.username,
       password: config.password,
       ssl: sslOption(config.ssl_required),
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      max: DB_POOL_MAX,
+      idleTimeoutMillis: DB_IDLE_TIMEOUT_MS,
+      connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
     });
     pgPools.set(config.id, pool);
   }
@@ -69,9 +76,9 @@ function getMysqlPool(config: DatabaseConnection): mysql.Pool {
       password: config.password,
       ssl: config.ssl_required ? { rejectUnauthorized: false } : undefined,
       waitForConnections: true,
-      connectionLimit: 5,
-      queueLimit: 0,
-      connectTimeout: 5000,
+      connectionLimit: DB_POOL_MAX,
+      queueLimit: DB_QUEUE_LIMIT,
+      connectTimeout: DB_CONNECTION_TIMEOUT_MS,
     });
     mysqlPools.set(config.id, pool);
   }
@@ -80,7 +87,7 @@ function getMysqlPool(config: DatabaseConnection): mysql.Pool {
 
 export function getPool(dbId: string): pg.Pool | mysql.Pool {
   const config = getConnectionConfig(dbId);
-  if (!config) throw new Error(`Database ${dbId} not found`);
+  if (!config) throw new Error(ERR_DB_NOT_FOUND(dbId));
   if (config.type === "postgresql") return getPgPool(config);
   return getMysqlPool(config);
 }
@@ -108,14 +115,14 @@ export async function testConnection(
       user: config.username,
       password: config.password,
       ssl: sslOption(sslRequired),
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: DB_CONNECTION_TIMEOUT_MS,
     });
     try {
       await client.connect();
       await client.end();
       return { ok: true };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Connection failed";
+      const msg = err instanceof Error ? err.message : ERR_CONNECTION_FAILED;
       return { ok: false, error: msg };
     }
   } else {
@@ -127,12 +134,12 @@ export async function testConnection(
         user: config.username,
         password: config.password,
         ssl: sslRequired ? { rejectUnauthorized: false } : undefined,
-        connectTimeout: 5000,
+        connectTimeout: DB_CONNECTION_TIMEOUT_MS,
       });
       await conn.end();
       return { ok: true };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Connection failed";
+      const msg = err instanceof Error ? err.message : ERR_CONNECTION_FAILED;
       return { ok: false, error: msg };
     }
   }

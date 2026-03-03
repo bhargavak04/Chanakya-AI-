@@ -4,9 +4,9 @@
  */
 import pg from "pg";
 import mysql from "mysql2/promise";
+import { QUERY_TIMEOUT_MS } from "../../core/constants.js";
+import { ERR_QUERY_TIMEOUT } from "../../core/strings.js";
 import { getPool, isPostgres } from "../db/connections.js";
-
-const QUERY_TIMEOUT_MS = 45000;
 
 export async function executeQuery(
   dbId: string,
@@ -21,7 +21,7 @@ export async function executeQuery(
       const result = await Promise.race([
         client.query({ text: sql, rowMode: "array" }),
         new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Query timeout (${QUERY_TIMEOUT_MS / 1000}s)`)), QUERY_TIMEOUT_MS)
+          setTimeout(() => reject(new Error(ERR_QUERY_TIMEOUT(QUERY_TIMEOUT_MS / 1000))), QUERY_TIMEOUT_MS)
         ),
       ]);
 
@@ -42,7 +42,7 @@ export async function executeQuery(
     const result = (await Promise.race([
       pool.query(sql),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Query timeout (${QUERY_TIMEOUT_MS / 1000}s)`)), QUERY_TIMEOUT_MS)
+        setTimeout(() => reject(new Error(ERR_QUERY_TIMEOUT(QUERY_TIMEOUT_MS / 1000))), QUERY_TIMEOUT_MS)
       ),
     ])) as unknown as [mysql.RowDataPacket[]];
 

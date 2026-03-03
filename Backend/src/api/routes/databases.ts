@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { ERR_VALIDATION_FAILED, ERR_CONNECTION_FAILED, ERR_DATABASE_NOT_FOUND } from "../../core/strings.js";
 import { getInternalDb, generateId } from "../../lib/db/internal.js";
 import { testConnection, getConnectionConfig } from "../../lib/db/connections.js";
 import type { DbType } from "../../types/index.js";
@@ -32,7 +33,7 @@ export const databaseRoutes: FastifyPluginAsync = async (app) => {
       const issues = parsed.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; ");
       req.log.warn({ body: req.body, issues }, "Validation failed");
       return reply.status(400).send({
-        error: "Validation failed",
+        error: ERR_VALIDATION_FAILED,
         details: issues,
         fieldErrors: parsed.error.flatten().fieldErrors,
       });
@@ -56,7 +57,7 @@ export const databaseRoutes: FastifyPluginAsync = async (app) => {
         "Connection test failed"
       );
       return reply.status(400).send({
-        error: "Connection failed",
+        error: ERR_CONNECTION_FAILED,
         details: result.error,
       });
     }
@@ -74,7 +75,7 @@ export const databaseRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/databases/:id/test", async (req, reply) => {
     const config = getConnectionConfig((req.params as { id: string }).id);
-    if (!config) return reply.status(404).send({ error: "Database not found" });
+    if (!config) return reply.status(404).send({ error: ERR_DATABASE_NOT_FOUND });
     const result = await testConnection(config);
     if (!result.ok) {
       req.log.warn({ dbId: config.id, error: result.error }, "Connection test failed");
@@ -87,7 +88,7 @@ export const databaseRoutes: FastifyPluginAsync = async (app) => {
     const db = getInternalDb();
     const id = (req.params as { id: string }).id;
     const result = db.prepare("DELETE FROM databases WHERE id = ?").run(id);
-    if (result.changes === 0) return reply.status(404).send({ error: "Database not found" });
+    if (result.changes === 0) return reply.status(404).send({ error: ERR_DATABASE_NOT_FOUND });
     return { deleted: id };
   });
 };

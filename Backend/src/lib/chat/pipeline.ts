@@ -9,12 +9,23 @@ import { validateAndSanitize } from "../sql/validator.js";
 import { executeQuery } from "../sql/executor.js";
 import { getConnectionConfig } from "../db/connections.js";
 import { computeForecast, parseForecastDays } from "./forecast.js";
+import { buildDiagnoseSystemPrompt, buildDiagnoseStepPrompt, parseDiagnoseStep } from "./diagnose.js";
+import { LOG_PREFIX, MAX_DIAGNOSE_STEPS, MAX_SQL_ATTEMPTS } from "../../core/constants.js";
 import {
-  buildDiagnoseSystemPrompt,
-  buildDiagnoseStepPrompt,
-  parseDiagnoseStep,
-  MAX_DIAGNOSE_STEPS,
-} from "./diagnose.js";
+  ERR_DATABASE_NOT_FOUND,
+  ERR_INVALID_LLM_OUTPUT,
+  ERR_PARSE_LLM_JSON,
+  ERR_NO_SCHEMA,
+  ERR_LLM_REQUEST_FAILED,
+  ERR_LLM_RETRY_FAILED,
+  ERR_SQL_VALIDATION_FAILED,
+  ERR_QUERY_EXECUTION_FAILED,
+  ERR_QUERY_FAILED,
+  ERR_DIAGNOSE_MAX_STEPS,
+  MSG_NO_DATA,
+  MSG_SEE_CHART_DETAILS,
+  buildFixSqlRetryMessage,
+} from "../../core/strings.js";
 import type { LLMAnalyzeOutput, ChartConfig, ChatResponseSuccess, ChatResponseError, ConversationState } from "../../types/index.js";
 import type { DbType } from "../../types/index.js";
 
@@ -38,9 +49,9 @@ function parseLLMOutput(content: string): LLMAnalyzeOutput | { error: string } {
     if (parsed && typeof parsed === "object" && "mode" in parsed && "query" in parsed && "chart" in parsed) {
       return parsed as LLMAnalyzeOutput;
     }
-    return { error: "Invalid LLM output structure" };
+    return { error: ERR_INVALID_LLM_OUTPUT };
   } catch {
-    return { error: "Failed to parse LLM response as JSON" };
+    return { error: ERR_PARSE_LLM_JSON };
   }
 }
 
@@ -93,18 +104,15 @@ async function generateAiInsights(
       .split(/\n+/)
       .map((s) => s.replace(/^[-*•]\s*/, "").trim())
       .filter((s) => s.length > 10);
-    return lines.length > 0 ? lines.slice(0, 8) : [text.slice(0, 500) || "See chart and table for details."];
+    return lines.length > 0 ? lines.slice(0, 8) : [text.slice(0, 500) || MSG_SEE_CHART_DETAILS];
   } catch {
     return [];
   }
 }
 
-const LOG_PREFIX = "[CHAT]";
-const MAX_SQL_ATTEMPTS = 2;
-
 function formatQueryError(err: unknown): string {
   const e = err as { message?: string; detail?: string; hint?: string };
-  let msg = (e?.message as string) ?? "Query execution failed";
+  let msg = (e?.message as string) ?? ERR_QUERY_EXECUTION_FAILED;
   if (e?.detail) msg += `\nDetail: ${e.detail}`;
   if (e?.hint) msg += `\nHint: ${e.hint}`;
   return msg;
@@ -184,7 +192,7 @@ async function runDiagnosePipeline(
     if (!validation.valid) {
       steps.push({
         query: parsed.query,
-        resultSummary: `Error: ${validation.error ?? "SQL validation failed"}. Fix the query and try again.`,
+        resultSummary: `Error: ${validation.error ?? ERR_SQL_VALIDATION_FAILED}. Fix the query and try again.`,
       });
       messages.push({ role: "assistant", content });
       messages.push({ role: "user", content: buildDiagnoseStepPrompt(message, steps) });
@@ -200,7 +208,7 @@ async function runDiagnosePipeline(
       queryTimeMs = result.durationMs;
       totalQueryTimeMs += queryTimeMs;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Query failed";
+      const msg = err instanceof Error ? err.message : ERR_QUERY_FAILED;
       console.error(`${LOG_PREFIX} Diagnose query failed:`, err);
       steps.push({ query: parsed.query, resultSummary: `Error: ${msg}` });
       messages.push({ role: "assistant", content });
@@ -222,8 +230,8 @@ async function runDiagnosePipeline(
     data: lastRows,
     chart_config: lastChart,
     insights: [
-      "Reached maximum diagnostic steps.",
-      lastRows.length > 0 ? buildDataSummary(lastRows, lastChart) : "No data to display.",
+      ERR_DIAGNOSE_MAX_STEPS,
+      lastRows.length > 0 ? buildDataSummary(lastRows, lastChart) : MSG_NO_DATA,
     ],
     badges: [],
     export: { csv_available: true, excel_available: true },
@@ -244,20 +252,20 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
 
   const config = getConnectionConfig(dbId);
   if (!config) {
-    return { error: { type: "not_found", message: "Database not found" } };
+    return { error: { type: "not_found", message: ERR_DATABASE_NOT_FOUND } };
   }
 
   if (mode === "diagnose") {
     const tables = getSchemaForDb(dbId);
     if (tables.length === 0) {
-      return { error: { type: "no_schema", message: "Schema not ingested. Add database and run schema ingestion first." } };
+      return { error: { type: "no_schema", message: ERR_NO_SCHEMA } };
     }
     return runDiagnosePipeline(dbId, message, config);
   }
 
   const tables = await getSchemaForQuery(dbId, message);
   if (tables.length === 0) {
-    return { error: { type: "no_schema", message: "Schema not ingested. Add database and run schema ingestion first." } };
+    return { error: { type: "no_schema", message: ERR_NO_SCHEMA } };
   }
 
   const schemaText = formatSchemaForPrompt(tables);
@@ -275,7 +283,7 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
       temperature: 0.1,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "LLM request failed";
+    const msg = err instanceof Error ? err.message : ERR_LLM_REQUEST_FAILED;
     return { error: { type: "llm_error", message: msg } };
   }
 
@@ -288,7 +296,7 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
 
   let validation = validateAndSanitize(parsed.query, config.type as DbType);
   if (!validation.valid) {
-    return { error: { type: "invalid_sql", message: validation.error ?? "SQL validation failed" } };
+    return { error: { type: "invalid_sql", message: validation.error ?? ERR_SQL_VALIDATION_FAILED } };
   }
 
   console.log(`${LOG_PREFIX} LLM parsed JSON:`, JSON.stringify(parsed, null, 2));
@@ -313,15 +321,7 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
         return { error: { type: "query_error", message: formattedError } };
       }
 
-      const retryUserContent = `Your previous SQL failed. Fix it and return valid JSON with the corrected query.
-
-Failed SQL:
-${currentValidation.sql}
-
-Error:
-${formattedError}
-
-Return the corrected JSON (mode, query, chart) with a fixed query.`;
+      const retryUserContent = buildFixSqlRetryMessage(currentValidation.sql ?? "", formattedError);
       try {
         const retryResult = await llm.generate({
           messages: [
@@ -345,7 +345,7 @@ Return the corrected JSON (mode, query, chart) with a fixed query.`;
         currentValidation = retryValidation;
         console.log(`${LOG_PREFIX} SQL retry generated:`, currentValidation.sql);
       } catch (retryErr) {
-        const msg = retryErr instanceof Error ? retryErr.message : "LLM retry failed";
+        const msg = retryErr instanceof Error ? retryErr.message : ERR_LLM_RETRY_FAILED;
         return { error: { type: "llm_error", message: msg } };
       }
     }

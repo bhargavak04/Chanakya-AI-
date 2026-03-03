@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { ERR_CONVERSATION_NOT_FOUND, ERR_CONVERSATION_TIED_TO_DB } from "../../core/strings.js";
 import { runChatPipeline } from "../../lib/chat/pipeline.js";
 import {
   createConversation,
@@ -28,9 +29,9 @@ export const chatRoutes: FastifyPluginAsync = async (app) => {
       conversationId = createConversation(dbId);
     } else {
       const conv = getConversation(conversationId);
-      if (!conv) return reply.status(404).send({ error: "Conversation not found" });
+      if (!conv) return reply.status(404).send({ error: ERR_CONVERSATION_NOT_FOUND });
       if (conv.active_db_id !== dbId) {
-        return reply.status(400).send({ error: "Conversation is tied to a different database" });
+        return reply.status(400).send({ error: ERR_CONVERSATION_TIED_TO_DB });
       }
     }
 
