@@ -2,6 +2,7 @@
  * Centralized configuration with env validation
  */
 import { z } from "zod";
+import { ERR_CONFIG_VALIDATION } from "./core/strings.js";
 import { join } from "path";
 
 const envSchema = z.object({
@@ -26,7 +27,7 @@ export function getConfig(): Config {
 
     if (!parsed.success) {
       const msg = parsed.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("\n");
-      throw new Error(`Config validation failed:\n${msg}`);
+      throw new Error(ERR_CONFIG_VALIDATION(msg));
     }
     config = parsed.data;
   }

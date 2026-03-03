@@ -2,9 +2,21 @@
  * Diagnose mode - multi-step agent that runs multiple SQL queries
  * to identify root causes across tables
  */
+import { MAX_DIAGNOSE_STEPS } from "../../core/constants.js";
+import {
+  ERR_MISSING_DIAGNOSIS_SUMMARY,
+  ERR_MISSING_QUERY,
+  ERR_INVALID_DIAGNOSE_STEP,
+  ERR_PARSE_DIAGNOSE_JSON,
+} from "../../core/strings.js";
+import {
+  DIAGNOSE_STEP_FIRST,
+  DIAGNOSE_STEP_FOLLOW_UP,
+  DIAGNOSE_SYSTEM_PREFIX,
+} from "../../core/prompts.js";
 import type { ChartConfig } from "../../types/index.js";
 
-export const MAX_DIAGNOSE_STEPS = 5;
+export { MAX_DIAGNOSE_STEPS };
 
 export interface DiagnoseStepQuery {
   action: "query";
@@ -34,7 +46,7 @@ export function parseDiagnoseStep(content: string): DiagnoseStepOutput | { error
       const p = parsed as Record<string, unknown>;
       if (p.action === "finish") {
         const d = p as { action: "finish"; diagnosis_summary?: string; root_causes?: string[]; recommendations?: string[]; chart?: ChartConfig };
-        if (typeof d.diagnosis_summary !== "string") return { error: "Missing diagnosis_summary" };
+        if (typeof d.diagnosis_summary !== "string") return { error: ERR_MISSING_DIAGNOSIS_SUMMARY };
         return {
           action: "finish",
           diagnosis_summary: d.diagnosis_summary,
@@ -45,7 +57,7 @@ export function parseDiagnoseStep(content: string): DiagnoseStepOutput | { error
       }
       if (p.action === "query") {
         const q = p as { action: "query"; query?: string; chart?: ChartConfig; reasoning?: string };
-        if (typeof q.query !== "string") return { error: "Missing query" };
+        if (typeof q.query !== "string") return { error: ERR_MISSING_QUERY };
         const chart = (q.chart as ChartConfig) ?? { type: "table", x_axis: "", y_axis: [] };
         return {
           action: "query",
@@ -55,52 +67,14 @@ export function parseDiagnoseStep(content: string): DiagnoseStepOutput | { error
         };
       }
     }
-    return { error: "Invalid diagnose step structure" };
+    return { error: ERR_INVALID_DIAGNOSE_STEP };
   } catch {
-    return { error: "Failed to parse diagnose response as JSON" };
+    return { error: ERR_PARSE_DIAGNOSE_JSON };
   }
 }
 
 export function buildDiagnoseSystemPrompt(schemaText: string, dbType: string): string {
-  return `You are a diagnostic analyst. You investigate data issues by running MULTIPLE SQL queries across different tables to find root causes.
-
-Your job: Run queries, observe results, then either run another query to dig deeper OR finish with your diagnosis.
-
-RULES:
-1. Use ONLY tables and columns from the schema. Output ONLY SELECT queries. Add LIMIT 1000.
-2. Return valid JSON only. No markdown.
-3. For comparison charts: use multiple y_axis columns (e.g. ["current_revenue", "previous_revenue"] or ["revenue", "bookings"]) so trends can be compared. Line charts with 2-3 series work well.
-4. Explore related tables: revenue, bookings, members, venues, etc. JOIN across tables to find drivers.
-5. After 1-4 queries, when you have enough evidence, output action: "finish" with your diagnosis.
-6. Date filters: PostgreSQL use INTERVAL '1 month', NOW() - INTERVAL '7 days'. MySQL use DATE_SUB(NOW(), INTERVAL 7 DAY).
-
-STEP OUTPUT - run another query:
-{
-  "action": "query",
-  "reasoning": "Brief: what you're checking and why",
-  "query": "SELECT ... (valid SQL)",
-  "chart": {
-    "type": "line" | "bar" | "area" | "table",
-    "x_axis": "column_name",
-    "y_axis": ["col1", "col2"],
-    "time_granularity": "month" (if time series)
-  }
-}
-
-STEP OUTPUT - finish with diagnosis:
-{
-  "action": "finish",
-  "diagnosis_summary": "2-4 sentence summary of what caused the issue",
-  "root_causes": ["Cause 1", "Cause 2", ...],
-  "recommendations": ["Action 1", "Action 2", ...],
-  "chart": {
-    "type": "line" | "bar" | "area" | "table",
-    "x_axis": "column_name",
-    "y_axis": ["col1", "col2"]
-  }
-}
-
-DATABASE: ${dbType}
+  return `${DIAGNOSE_SYSTEM_PREFIX}${dbType}
 
 SCHEMA:
 ${schemaText}`;
@@ -118,17 +92,12 @@ export function buildDiagnoseStepPrompt(
     .join("\n\n---\n\n");
 
   if (steps.length === 0) {
-    return `User question: ${userQuestion}
-
-Run your first diagnostic query. Focus on the main metric or comparison (e.g. revenue by month, bookings trend).`;
+    return `User question: ${userQuestion}${DIAGNOSE_STEP_FIRST}`;
   }
 
   return `User question: ${userQuestion}
 
 Previous queries and results:
 ${history}
-
-Based on the above, either:
-1. Run another query to investigate further (e.g. drill into a specific table, compare regions, check member/booking patterns)
-2. Or output action: "finish" with your diagnosis_summary, root_causes, and recommendations.`;
+${DIAGNOSE_STEP_FOLLOW_UP}`;
 }
