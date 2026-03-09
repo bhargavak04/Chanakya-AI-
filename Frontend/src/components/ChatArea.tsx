@@ -221,29 +221,29 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
   const isEmpty = activeDbId && messages.length === 0;
 
   return (
-    <div className="flex-1 overflow-y-auto flex flex-col items-center py-10 px-6 max-w-5xl mx-auto w-full space-y-12 chat-scroll">
+    <div className="flex-1 overflow-y-auto flex flex-col items-center py-8 px-6 max-w-4xl mx-auto w-full chat-scroll">
       {!activeDbId && (
         <div className="flex flex-col items-center justify-center flex-1 text-center text-muted-foreground">
-          <p className="text-sm mb-2">No database selected.</p>
-          <p className="text-xs">Add a data source and select it to start chatting.</p>
+          <p className="text-sm">No database selected.</p>
+          <p className="text-xs mt-1 opacity-80">Add a data source and select it to start.</p>
         </div>
       )}
 
       {isEmpty && (
-        <div className="flex-1 w-full max-w-2xl flex flex-col items-center justify-center text-center px-4">
-          <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
-            <currentMode.icon className="w-6 h-6 text-primary" />
+        <div className="flex-1 w-full max-w-xl flex flex-col items-center justify-center text-center px-4 py-12">
+          <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center mb-5">
+            <currentMode.icon className="w-5 h-5 text-primary" />
           </div>
-          <h2 className="text-lg font-medium text-foreground mb-1">{currentMode.label} mode</h2>
-          <p className="text-sm text-muted-foreground mb-6 max-w-md">{currentMode.desc}</p>
-          <p className="text-xs text-muted-foreground/80 mb-3">Try asking:</p>
+          <h2 className="text-base font-medium text-foreground mb-1">{currentMode.label}</h2>
+          <p className="text-[13px] text-muted-foreground mb-8 max-w-sm">{currentMode.desc}</p>
+          <p className="text-[11px] text-muted-foreground/80 uppercase tracking-wider mb-3">Suggestions</p>
           <div className="flex flex-wrap gap-2 justify-center">
             {currentMode.suggestions.map((s) => (
               <button
                 key={s}
                 type="button"
                 onClick={() => handleSuggestionClick(s)}
-                className="px-4 py-2 rounded-lg bg-secondary/60 hover:bg-secondary border border-border/60 text-[13px] text-foreground/90 transition-colors text-left max-w-xs"
+                className="px-3 py-2 rounded-lg bg-muted/50 hover:bg-muted/80 text-[13px] text-foreground/90 transition-colors text-left max-w-xs"
               >
                 {s}
               </button>
@@ -262,72 +262,72 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
               : undefined;
 
           return (
-          <motion.div
-            key={message.id}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, ease: "easeOut" }}
-            className="w-full"
-          >
-            <div className="flex gap-4 items-start mb-6">
-              <div className="flex-shrink-0 mt-1">
-                {message.type === "user" ? (
-                  <div className="w-8 h-8 rounded-full bg-secondary border border-border flex items-center justify-center overflow-hidden">
-                    <User className="w-4 h-4 text-muted-foreground" />
-                  </div>
-                ) : (
-                  <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/20 flex items-center justify-center overflow-hidden">
-                    <Bot className="w-4 h-4 text-primary" />
-                  </div>
-                )}
+            <motion.div
+              key={message.id}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, ease: "easeOut" }}
+              className="w-full mb-10"
+            >
+              <div className="flex gap-3 items-start">
+                <div className="flex-shrink-0 mt-0.5">
+                  {message.type === "user" ? (
+                    <div className="w-7 h-7 rounded-full bg-muted/80 flex items-center justify-center">
+                      <User className="w-3.5 h-3.5 text-muted-foreground" />
+                    </div>
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center">
+                      <Bot className="w-3.5 h-3.5 text-primary" />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0 pt-0.5">
+                  {message.type === "user" ? (
+                    <p className="text-[14px] leading-relaxed text-foreground">
+                      {message.content}
+                    </p>
+                  ) : "error" in message ? (
+                    <>
+                      <p className="text-[14px] leading-relaxed text-foreground">{message.content}</p>
+                      <p className="text-[12px] text-destructive/90 mt-1">{message.error}</p>
+                    </>
+                  ) : "response" in message && message.response ? (
+                    <div className="space-y-3">
+                      <ResponseBlock
+                        response={message.response}
+                        chartTypeOverride={chartTypeOverride ?? undefined}
+                        chartConfigOverride={getChartConfigOverride(message.id)}
+                        hideInsights
+                        onOpenChartCustomize={onOpenChartCustomize ? () => onOpenChartCustomize(message.id, message.response) : undefined}
+                        bookmark={
+                          activeDbId && userQuestion
+                            ? {
+                                userQuestion,
+                                dbId: activeDbId,
+                                isBookmarked: isBookmarked(activeDbId, userQuestion),
+                                onToggle: () => {
+                                  const id = getBookmarkId(activeDbId, userQuestion);
+                                  if (id) removeBookmark(activeDbId, id);
+                                  else addBookmark(activeDbId, userQuestion);
+                                },
+                              }
+                            : undefined
+                        }
+                      />
+                      {message.response.insights.length > 0 && (
+                        <div className="text-[14px] leading-relaxed text-foreground/90">
+                          {message.response.insights.map((insight, i) => (
+                            <p key={i} className="mb-1.5 last:mb-0">
+                              {insight}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-              <div className="flex-1 pt-1.5 min-w-0">
-                {message.type === "user" ? (
-                  <p className="text-[15px] leading-relaxed text-foreground/90 max-w-2xl font-normal">
-                    {message.content}
-                  </p>
-                ) : "error" in message ? (
-                  <>
-                    <p className="text-[15px] leading-relaxed text-foreground/90">{message.content}</p>
-                    <p className="text-[13px] text-rose-400/90 mt-1">{message.error}</p>
-                  </>
-                ) : "response" in message && message.response ? (
-                  <div className="space-y-4">
-                    <ResponseBlock
-                      response={message.response}
-                      chartTypeOverride={chartTypeOverride ?? undefined}
-                      chartConfigOverride={getChartConfigOverride(message.id)}
-                      hideInsights
-                      onOpenChartCustomize={onOpenChartCustomize ? () => onOpenChartCustomize(message.id, message.response) : undefined}
-                      bookmark={
-                        activeDbId && userQuestion
-                          ? {
-                              userQuestion,
-                              dbId: activeDbId,
-                              isBookmarked: isBookmarked(activeDbId, userQuestion),
-                              onToggle: () => {
-                                const id = getBookmarkId(activeDbId, userQuestion);
-                                if (id) removeBookmark(activeDbId, id);
-                                else addBookmark(activeDbId, userQuestion);
-                              },
-                            }
-                          : undefined
-                      }
-                    />
-                    {message.response.insights.length > 0 && (
-                      <div className="text-[15px] leading-relaxed text-foreground/90 w-full">
-                        {message.response.insights.map((insight, i) => (
-                          <p key={i} className="mb-2 last:mb-0">
-                            {insight}
-                          </p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </motion.div>
+            </motion.div>
           );
         })}
       </AnimatePresence>
@@ -336,42 +336,41 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          className="flex gap-4 items-start w-full"
+          className="flex gap-3 items-start w-full mb-10"
         >
-          <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/20 flex items-center justify-center flex-shrink-0">
-            <Loader2 className="w-4 h-4 text-primary animate-spin" />
+          <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
+            <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
           </div>
-          <p className="text-[15px] text-muted-foreground pt-2">{LOADING_STEPS[loadingStep]}</p>
+          <p className="text-[14px] text-muted-foreground pt-1">{LOADING_STEPS[loadingStep]}</p>
         </motion.div>
       )}
 
-      <div ref={bottomRef} className="h-24 shrink-0" />
+      <div ref={bottomRef} className="h-28 shrink-0" />
 
       {activeDbId && (
-        <div className="fixed bottom-0 left-64 right-0 p-8 flex justify-center bg-gradient-to-t from-background via-background/90 to-transparent pt-12">
-          <div className="relative w-full max-w-2xl group shadow-2xl">
-            <div className="absolute inset-0 bg-primary/20 blur-[100px] rounded-full opacity-0 group-focus-within:opacity-100 transition-opacity pointer-events-none" />
-            <div className="flex flex-wrap gap-2 mb-3 px-1">
+        <div className="fixed bottom-0 left-64 right-0 flex justify-center px-6 py-6 bg-background border-t border-border/30">
+          <div className="w-full max-w-2xl">
+            <div className="flex flex-wrap gap-1.5 mb-2.5">
               {CHAT_MODES.map((m) => (
                 <button
                   key={m.id}
                   type="button"
                   onClick={() => setMode(m.id)}
                   className={cn(
-                    "flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] font-medium transition-colors",
+                    "flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors",
                     mode === m.id
-                      ? "bg-primary/15 text-primary border border-primary/30"
-                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/80 border border-transparent"
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                   )}
                 >
-                  <m.icon className="w-3.5 h-3.5" />
+                  <m.icon className="w-3 h-3" />
                   {m.label}
                 </button>
               ))}
             </div>
-            <div className="relative glass border border-border/60 hover:border-border transition-colors p-3 rounded-2xl flex items-center gap-3">
-              <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-secondary/50 flex items-center justify-center text-primary" title={currentMode.desc}>
-                <currentMode.icon className="w-4 h-4" />
+            <div className="flex items-center gap-2 rounded-xl border border-border/60 bg-card/50 px-3 py-2 focus-within:border-border focus-within:ring-1 focus-within:ring-primary/20 transition-all">
+              <div className="flex-shrink-0 w-7 h-7 rounded-lg bg-muted/60 flex items-center justify-center text-primary" title={currentMode.desc}>
+                <currentMode.icon className="w-3.5 h-3.5" />
               </div>
               <input
                 ref={inputRef}
@@ -381,12 +380,12 @@ export function ChatArea({ onOpenChartCustomize }: ChatAreaProps) {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 disabled={loading}
-                className="flex-1 bg-transparent border-none outline-none py-2 text-[15px] placeholder:text-muted-foreground/60 disabled:opacity-50"
+                className="flex-1 bg-transparent border-none outline-none py-2 text-[14px] placeholder:text-muted-foreground/60 disabled:opacity-50 min-w-0"
               />
               <button
                 onClick={handleSend}
                 disabled={loading || !input.trim()}
-                className="flex-shrink-0 w-8 h-8 rounded-xl bg-primary flex items-center justify-center text-primary-foreground hover:scale-105 active:scale-95 transition-transform disabled:opacity-50 disabled:hover:scale-100"
+                className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary flex items-center justify-center text-primary-foreground hover:opacity-90 active:opacity-80 transition-opacity disabled:opacity-50"
               >
                 {loading ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />

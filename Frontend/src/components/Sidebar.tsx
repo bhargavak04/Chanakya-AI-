@@ -4,14 +4,14 @@ import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { toast } from 'sonner';
-import { 
+import {
   MessageSquare,
-  FileText, 
-  Database, 
-  Settings, 
+  FileText,
+  Database,
+  Settings,
   Search,
   ChevronRight,
-  User
+  User,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useApp } from '@/context/AppContext';
@@ -42,33 +42,45 @@ export function Sidebar() {
     }
   };
 
+  const navLinkClass =
+    'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-colors duration-150 group';
+
   return (
-    <aside className="w-64 border-r border-border bg-sidebar h-screen flex flex-col sticky top-0">
-      <Link href="/" className="p-4 flex items-center gap-1.5 mb-4">
-        <Logo size={40} />
-        <span className="font-chanakya font-semibold text-lg tracking-tight text-foreground/90">Chanakya</span>
+    <aside className="w-64 h-screen flex flex-col sticky top-0 bg-sidebar border-r border-sidebar-border/70">
+      <Link
+        href="/"
+        className="flex items-center gap-2 px-5 pt-6 pb-5 min-h-[4.5rem]"
+      >
+        <Logo size={36} />
+        <span className="font-chanakya font-semibold text-base tracking-tight text-foreground">
+          Chanakya
+        </span>
       </Link>
 
-      <div className="px-3 mb-6">
-        <div className="relative group">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
-          <input 
-            type="text" 
-            placeholder="Search reports..." 
-            className="w-full bg-secondary/50 border border-border rounded-md py-1.5 pl-9 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 transition-all placeholder:text-muted-foreground/60"
+      <div className="px-3 mb-4">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Search..."
+            className="w-full bg-muted/40 border-0 rounded-lg py-2 pl-9 pr-3 text-[13px] text-foreground placeholder:text-muted-foreground/70 focus:outline-none focus:ring-1 focus:ring-primary/30 transition-shadow"
           />
         </div>
       </div>
 
-      <nav className="flex-1 px-2 space-y-0.5">
+      <nav className="flex-1 px-2 space-y-0.5 overflow-y-auto chat-scroll">
         {navItems.map((item) => {
-          const isActive = item.href !== '#' && (item.href === '/' ? pathname === '/' : pathname.startsWith(item.href));
+          const isActive =
+            item.href !== '#' &&
+            (item.href === '/' ? pathname === '/' : pathname.startsWith(item.href));
           const content = (
             <>
-              <item.icon className={cn(
-                "w-4 h-4 transition-colors flex-shrink-0",
-                isActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground"
-              )} />
+              <item.icon
+                className={cn(
+                  'w-4 h-4 flex-shrink-0 transition-colors',
+                  isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
+                )}
+              />
               <span>{item.label}</span>
             </>
           );
@@ -77,7 +89,8 @@ export function Sidebar() {
               key={item.label}
               onClick={showComingSoon}
               className={cn(
-                "w-full flex items-center gap-3 px-3 py-1.5 rounded-md text-[13px] transition-all duration-200 group text-muted-foreground hover:bg-secondary/80 hover:text-foreground"
+                navLinkClass,
+                'text-muted-foreground hover:text-foreground hover:bg-muted/50'
               )}
             >
               {content}
@@ -88,10 +101,10 @@ export function Sidebar() {
               href="/"
               onClick={handleNewChat}
               className={cn(
-                "w-full flex items-center gap-3 px-3 py-1.5 rounded-md text-[13px] transition-all duration-200 group",
+                navLinkClass,
                 pathname === '/'
-                  ? "bg-primary/10 text-primary font-medium" 
-                  : "text-muted-foreground hover:bg-secondary/80 hover:text-foreground"
+                  ? 'bg-primary/10 text-primary font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
               )}
             >
               {content}
@@ -101,10 +114,10 @@ export function Sidebar() {
               key={item.label}
               href={item.href}
               className={cn(
-                "w-full flex items-center gap-3 px-3 py-1.5 rounded-md text-[13px] transition-all duration-200 group",
+                navLinkClass,
                 isActive
-                  ? "bg-primary/10 text-primary font-medium" 
-                  : "text-muted-foreground hover:bg-secondary/80 hover:text-foreground"
+                  ? 'bg-primary/10 text-primary font-medium'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
               )}
             >
               {content}
@@ -113,16 +126,16 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="mt-auto p-4 border-t border-border/50">
-        <button className="flex items-center gap-3 w-full px-2 py-2 rounded-md hover:bg-secondary/80 transition-colors group">
-          <div className="w-6 h-6 rounded-full bg-secondary flex items-center justify-center border border-border overflow-hidden">
-            <User className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+      <div className="mt-auto px-3 py-4 border-t border-border/30">
+        <button className="flex items-center gap-3 w-full px-2 py-2 rounded-lg hover:bg-muted/40 transition-colors group text-left">
+          <div className="w-8 h-8 rounded-full bg-muted/60 flex items-center justify-center overflow-hidden flex-shrink-0">
+            <User className="w-4 h-4 text-muted-foreground" />
           </div>
-          <div className="flex-1 text-left">
-            <p className="text-[13px] font-medium text-foreground/90 leading-none mb-1">Alex Rivet</p>
-            <p className="text-[11px] text-muted-foreground leading-none">Pro Plan</p>
+          <div className="flex-1 min-w-0">
+            <p className="text-[13px] font-medium text-foreground truncate">Alex Rivet</p>
+            <p className="text-[11px] text-muted-foreground truncate">Pro Plan</p>
           </div>
-          <ChevronRight className="w-3 h-3 text-muted-foreground" />
+          <ChevronRight className="w-3.5 h-3.5 text-muted-foreground/70 flex-shrink-0" />
         </button>
       </div>
     </aside>
