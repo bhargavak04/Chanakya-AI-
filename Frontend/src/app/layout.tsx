@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Cinzel } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import "./globals.css";
 import { VisualEditsMessenger } from "orchids-visual-edits";
 import { Sidebar } from "@/components/Sidebar";
@@ -34,18 +35,20 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${cinzel.variable} antialiased bg-background text-foreground flex`}
       >
-        <AppProvider>
-          <Sidebar />
-          <main className="flex-1 flex flex-col h-screen overflow-hidden">
-            {children}
-          </main>
-          <Toaster theme="dark" position="bottom-right" richColors />
-          <VisualEditsMessenger />
-        </AppProvider>
+        <ThemeProvider attribute="class" defaultTheme="dark" storageKey="chanakya-theme">
+          <AppProvider>
+            <Sidebar />
+            <main className="flex-1 flex flex-col h-screen overflow-hidden">
+              {children}
+            </main>
+            <Toaster position="bottom-right" richColors />
+            <VisualEditsMessenger />
+          </AppProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

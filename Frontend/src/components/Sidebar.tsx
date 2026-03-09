@@ -16,6 +16,7 @@ import {
 import { cn } from '@/lib/utils';
 import { useApp } from '@/context/AppContext';
 import { Logo } from './Logo';
+import { ThemeToggle } from './ThemeToggle';
 
 function showComingSoon() {
   toast.info('Coming soon');
@@ -126,7 +127,10 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="mt-auto px-3 py-4 border-t border-border/30">
+      <div className="mt-auto px-3 py-3 border-t border-border/50 space-y-1">
+        <div className="flex items-center justify-end px-1">
+          <ThemeToggle />
+        </div>
         <button className="flex items-center gap-3 w-full px-2 py-2 rounded-lg hover:bg-muted/40 transition-colors group text-left">
           <div className="w-8 h-8 rounded-full bg-muted/60 flex items-center justify-center overflow-hidden flex-shrink-0">
             <User className="w-4 h-4 text-muted-foreground" />
