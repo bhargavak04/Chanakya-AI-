@@ -27,7 +27,7 @@ export default function Home() {
   return (
     <div className="flex-1 flex overflow-hidden">
       <div className="flex-1 flex flex-col min-w-0">
-        <header className="h-14 border-b border-border flex items-center justify-between px-6 bg-background/80 backdrop-blur-sm sticky top-0 z-10 shrink-0">
+        <header className="h-14 border-b border-border/40 flex items-center justify-between px-6 bg-background sticky top-0 z-10 shrink-0">
           <div className="flex items-center gap-4">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -69,7 +69,7 @@ export default function Home() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-hidden flex relative linear-gradient">
+        <div className="flex-1 overflow-hidden flex relative bg-background">
           <ChatArea onOpenChartCustomize={handleOpenChartCustomize} />
         </div>
       </div>
