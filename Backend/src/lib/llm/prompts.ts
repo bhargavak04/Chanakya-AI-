@@ -20,6 +20,8 @@ import {
   INSIGHT_SIMULATE,
   INSIGHT_DIAGNOSE,
   INSIGHT_MAX,
+  INSIGHT_GROUNDING,
+  INSIGHT_ANTI_RECITE,
   INSIGHT_PROMPT_PREFIX,
   INSIGHT_PROMPT_SUFFIX,
 } from "../../core/prompts.js";
@@ -44,7 +46,8 @@ export function buildSystemPrompt(
   mode: ChatMode,
   schemaText: string,
   dbType: string,
-  state?: ConversationState | null
+  state?: ConversationState | null,
+  intentContext?: string
 ): string {
   const ctx = stateContext(state);
 
@@ -76,7 +79,7 @@ ${MAX_INSTRUCTION}`,
   return `${instructions}
 ${ID_RESOLUTION_RULES}
 ${CHART_RULES}
-${ctx}
+${ctx}${intentContext ? `\n\n${intentContext}` : ""}
 
 DATABASE: ${dbType}
 
@@ -104,5 +107,7 @@ Data summary:
 ${dataSummary}
 
 ${guidance}
+${INSIGHT_ANTI_RECITE}
+${INSIGHT_GROUNDING}
 ${INSIGHT_PROMPT_SUFFIX}`;
 }

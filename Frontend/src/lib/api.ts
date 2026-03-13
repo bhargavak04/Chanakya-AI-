@@ -112,6 +112,12 @@ export type ChatResponseSuccess = {
   diagnosis_summary?: string;
   root_causes?: string[];
   recommendations?: string[];
+  /** Forecast mode: index into data where predicted segment starts */
+  forecast_start_index?: number;
+  /** Forecast mode: upper confidence bound per forecast point */
+  forecast_upper?: number[];
+  /** Forecast mode: lower confidence bound per forecast point */
+  forecast_lower?: number[];
 };
 
 export type ChatResponseError = { error: { type: string; message: string } };

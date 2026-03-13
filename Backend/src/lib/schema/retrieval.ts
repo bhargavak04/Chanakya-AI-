@@ -22,10 +22,10 @@ export function getSchemaForDb(dbId: string): TableWithColumns[] {
 
   const columns = db
     .prepare(
-      `SELECT id, table_id, column_name, data_type, is_nullable, is_primary_key, is_foreign_key, description
+      `SELECT id, table_id, column_name, data_type, is_nullable, is_primary_key, is_foreign_key, description, semantic_type
        FROM schema_columns`
     )
-    .all() as { id: string; table_id: string; column_name: string; data_type: string; is_nullable: number; is_primary_key: number; is_foreign_key: number; description: string | null }[];
+    .all() as { id: string; table_id: string; column_name: string; data_type: string; is_nullable: number; is_primary_key: number; is_foreign_key: number; description: string | null; semantic_type: string | null }[];
 
   const colByTable = new Map<string, typeof columns>();
   for (const c of columns) {
@@ -44,6 +44,7 @@ export function getSchemaForDb(dbId: string): TableWithColumns[] {
       is_primary_key: c.is_primary_key === 1,
       is_foreign_key: c.is_foreign_key === 1,
       description: c.description,
+      semantic_type: c.semantic_type ?? null,
     })),
   }));
 }
@@ -74,17 +75,35 @@ export async function getSchemaForQuery(
   }
 }
 
-/** Format schema as compact text for LLM prompt */
+/** Get available join lines for the given tables (from schema_relationships) for LLM context */
+export function getJoinsForTables(dbId: string, tableIds: string[]): string[] {
+  if (tableIds.length === 0) return [];
+  const db = getInternalDb();
+  const placeholders = tableIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT r.from_column_name, r.to_table_name, r.to_column_name, t.table_name AS from_table_name
+       FROM schema_relationships r
+       JOIN schema_tables t ON t.id = r.from_table_id
+       WHERE r.db_id = ? AND r.from_table_id IN (${placeholders})`
+    )
+    .all(dbId, ...tableIds) as { from_table_name: string; from_column_name: string; to_table_name: string; to_column_name: string }[];
+  return rows.map(
+    (row) => `${row.from_table_name}.${row.from_column_name} → ${row.to_table_name}.${row.to_column_name}`
+  );
+}
+
+/** Format schema as compact text for LLM prompt (includes column semantics when present) */
 export function formatSchemaForPrompt(tables: TableWithColumns[]): string {
   return tables
     .map(
       (t) =>
         `Table: ${t.table_name}${t.description ? ` (${t.description})` : ""}\n` +
         t.columns
-          .map(
-            (c) =>
-              `  - ${c.column_name} (${c.data_type})${c.is_primary_key ? " PK" : ""}${c.is_foreign_key ? " FK" : ""}`
-          )
+          .map((c) => {
+            const sem = c.semantic_type || c.description ? ` ${c.semantic_type ?? ""}${c.semantic_type && c.description ? ": " : ""}${c.description ?? ""}`.trim() : "";
+            return `  - ${c.column_name} (${c.data_type})${c.is_primary_key ? " PK" : ""}${c.is_foreign_key ? " FK" : ""}${sem ? ` [${sem}]` : ""}`;
+          })
           .join("\n")
     )
     .join("\n\n");

@@ -47,6 +47,8 @@ export interface SchemaColumn {
   is_primary_key: boolean;
   is_foreign_key: boolean;
   description: string | null;
+  /** Column semantics: currency, timestamp, identifier, count, text, etc. */
+  semantic_type: string | null;
 }
 
 export interface TableWithColumns extends SchemaTable {
@@ -108,6 +110,16 @@ export interface ChatResponseSuccess {
   root_causes?: string[];
   /** Diagnose mode: actionable recommendations */
   recommendations?: string[];
+  /** Max mode: multi-query deep-dive summary */
+  analysis_summary?: string;
+  /** Max mode: key findings from deep-dive */
+  key_findings?: string[];
+  /** Forecast mode: index into data where predicted segment starts (history before, forecast from here) */
+  forecast_start_index?: number;
+  /** Forecast mode: upper confidence bound for each forecast point */
+  forecast_upper?: number[];
+  /** Forecast mode: lower confidence bound for each forecast point */
+  forecast_lower?: number[];
 }
 
 export interface ChatResponseError {

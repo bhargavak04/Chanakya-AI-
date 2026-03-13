@@ -10,6 +10,8 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   GROQ_API_KEY: z.string().optional(),
   DATA_DIR: z.string().default("./data"),
+  /** Optional. When set, forecast mode uses Prophet via this URL (e.g. http://localhost:5001). */
+  FORECAST_SERVICE_URL: z.string().optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;
@@ -23,6 +25,7 @@ export function getConfig(): Config {
       NODE_ENV: process.env.NODE_ENV,
       GROQ_API_KEY: process.env.GROQ_API_KEY,
       DATA_DIR: process.env.DATA_DIR,
+      FORECAST_SERVICE_URL: (process.env.FORECAST_SERVICE_URL?.trim() || undefined) as string | undefined,
     });
 
     if (!parsed.success) {

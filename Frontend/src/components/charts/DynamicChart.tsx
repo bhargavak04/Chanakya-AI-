@@ -91,22 +91,47 @@ function formatChartValue(value: unknown, columnName?: string): string {
   return `${prefix}${num.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 })}`;
 }
 
-function formatAxisTick(value: unknown): string {
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** Format a date value by time granularity: month → "Mar 2026", day → "Mar 4", year → "2026". */
+function formatDateByGranularity(value: unknown, granularity?: string): string {
   if (value == null) return "";
   const s = String(value);
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T[\d:.]+Z?$/);
-  if (m) {
-    const [, y, mo, d] = m;
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    return `${months[parseInt(mo!, 10) - 1]} ${d}`;
+  const withTime = s.match(/^(\d{4})-(\d{2})-(\d{2})T[\d:.]+Z?$/);
+  const dateOnly = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const m = withTime ?? dateOnly;
+  if (!m) return s.length > 12 ? `${s.slice(0, 10)}…` : s;
+  const [, y, mo, day] = m;
+  const monthIdx = parseInt(mo!, 10) - 1;
+  const monthName = MONTH_NAMES[monthIdx] ?? mo;
+  const year = y!;
+  const dayNum = day!;
+
+  switch (granularity) {
+    case "month":
+      return `${monthName} ${year}`;
+    case "year":
+      return year;
+    case "week":
+      return `${monthName} ${parseInt(dayNum, 10)}`;
+    case "day":
+    default:
+      return `${monthName} ${parseInt(dayNum, 10)}`;
   }
-  const d = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (d) {
-    const [, y, mo, day] = d;
-    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    return `${months[parseInt(mo!, 10) - 1]} ${day}`;
-  }
+}
+
+function formatAxisTick(value: unknown, granularity?: string): string {
+  if (value == null) return "";
+  const s = String(value);
+  if (/^\d{4}-\d{2}/.test(s)) return formatDateByGranularity(value, granularity);
   return s.length > 12 ? `${s.slice(0, 10)}…` : s;
+}
+
+/** Forecast mode: confidence band from Prophet (upper/lower bounds for forecast segment) */
+export interface ForecastBand {
+  startIndex: number;
+  upper: number[];
+  lower: number[];
 }
 
 interface DynamicChartProps {
@@ -117,28 +142,37 @@ interface DynamicChartProps {
   showYAxis?: boolean;
   /** When true, use larger height and margins (for report export to avoid clipping) */
   reportMode?: boolean;
+  /** Forecast mode: draw confidence band for predicted segment */
+  forecastBand?: ForecastBand;
 }
 
-export function DynamicChart({ data, config, className = "", showYAxis = false, reportMode = false }: DynamicChartProps) {
-  const { type, x_axis, y_axis, group_by, stacked, y_axis_right, reference_line } = config;
+export function DynamicChart({ data, config, className = "", showYAxis = false, reportMode = false, forecastBand }: DynamicChartProps) {
+  const { type, x_axis, y_axis, group_by, stacked, y_axis_right, reference_line, time_granularity } = config;
   const hideY = !showYAxis;
   const chartHeight = reportMode ? 340 : 200;
 
+  const axisTickFormatter = (v: unknown) => formatAxisTick(v, time_granularity);
+
   if (type === "table") {
-    const formatCell = (v: unknown): string => {
+    const keys = data[0] ? Object.keys(data[0]) : [];
+    const formatCell = (v: unknown, key: string): string => {
       if (v == null) return "—";
       const s = String(v);
-      const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T[\d:.]+Z?$/);
-      if (m) {
-        const [, , mo, d] = m;
-        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        return `${months[parseInt(mo!, 10) - 1]} ${d}, ${s.slice(11, 19)}`;
+      const isDateCol = key === x_axis || key.toLowerCase() === x_axis?.toLowerCase();
+      if (isDateCol && /^\d{4}-\d{2}/.test(s)) {
+        return formatDateByGranularity(v, time_granularity);
+      }
+      if (s.match(/^(\d{4})-(\d{2})-(\d{2})T[\d:.]+Z?$/)) {
+        const d2 = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+        if (d2) {
+          const [, , mo, day] = d2;
+          return `${MONTH_NAMES[parseInt(mo!, 10) - 1]} ${day}, ${s.slice(11, 19)}`;
+        }
       }
       const d2 = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
       if (d2) {
         const [, , mo, day] = d2;
-        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-        return `${months[parseInt(mo!, 10) - 1]} ${day}`;
+        return `${MONTH_NAMES[parseInt(mo!, 10) - 1]} ${parseInt(day!, 10)}`;
       }
       return s;
     };
@@ -147,21 +181,19 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
         <Table>
           <TableHeader>
             <TableRow>
-              {data[0]
-                ? Object.keys(data[0]).map((k) => (
-                    <TableHead key={k} className="text-xs">
-                      {k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                    </TableHead>
-                  ))
-                : null}
+              {keys.map((k) => (
+                <TableHead key={k} className="text-xs">
+                  {k.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                </TableHead>
+              ))}
             </TableRow>
           </TableHeader>
           <TableBody>
             {data.slice(0, 50).map((row, i) => (
               <TableRow key={i}>
-                {Object.values(row).map((v, j) => (
+                {keys.map((k, j) => (
                   <TableCell key={j} className="text-xs py-1.5">
-                    {formatCell(v)}
+                    {formatCell(row[k], k)}
                   </TableCell>
                 ))}
               </TableRow>
@@ -232,7 +264,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
   const isLineOrArea = type === "line" || type === "area";
   const isScatter = type === "scatter";
   const allYKeys = [...yKeys, ...yKeysRight];
-  const chartData =
+  let chartData: Record<string, unknown>[] =
     isLineOrArea || isScatter
       ? data.map((row) => {
           const out: Record<string, unknown> = { ...row };
@@ -244,17 +276,41 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
         })
       : data;
 
-  const calcDomain = (keys: string[]) => {
+  // Inject forecast confidence band for line/area when Prophet returned bounds
+  if (forecastBand && isLineOrArea && chartData.length > 0 && yKeys.length > 0) {
+    const { startIndex, upper, lower } = forecastBand;
+    const mainY = yKeys[0];
+    chartData = chartData.map((row, i) => {
+      const out = { ...row };
+      if (i >= startIndex) {
+        const j = i - startIndex;
+        out.__band_upper = j < upper.length ? upper[j] : undefined;
+        out.__band_lower = j < lower.length ? lower[j] : undefined;
+      } else {
+        const v = Number(row[mainY]);
+        out.__band_upper = v;
+        out.__band_lower = v;
+      }
+      return out;
+    });
+  }
+
+  const calcDomain = (keys: string[], includeBand?: boolean) => {
     let max = 0;
+    let min = 0;
     for (const row of chartData) {
       for (const k of keys) {
         const v = Number(row[k]);
         if (!Number.isNaN(v) && v > max) max = v;
+        if (!Number.isNaN(v) && v < min) min = v;
       }
+      if (includeBand && typeof row.__band_upper === "number" && row.__band_upper > max) max = row.__band_upper;
+      if (includeBand && typeof row.__band_lower === "number" && row.__band_lower < min) min = row.__band_lower;
     }
-    return max > 0 ? ([0, max * 1.05] as [number, number]) : undefined;
+    if (includeBand && min < 0) return [min * 1.05, max * 1.05] as [number, number];
+    return max > 0 || min < 0 ? ([Math.min(0, min * 1.05), max * 1.05] as [number, number]) : undefined;
   };
-  const yDomain = isLineOrArea || isScatter ? calcDomain(yKeys) : undefined;
+  const yDomain = isLineOrArea || isScatter ? calcDomain(yKeys, !!forecastBand) : undefined;
   const yDomainRight = (isLineOrArea || isScatter) && yKeysRight.length > 0 ? calcDomain(yKeysRight) : undefined;
 
   if (type === "pie") {
@@ -351,11 +407,23 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
               </linearGradient>
             </defs>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-            <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
+            <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={axisTickFormatter} />
             <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => formatYAxisTick(v, yKeys)} tick={axisStyle} width={40} />
             {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => formatYAxisTick(v, yKeysRight)} tick={axisStyle} width={40} />}
             <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} formatter={(value: unknown, name: string) => [formatChartValue(value, name), formatLabel(name)]} />
             {refLine}
+            {forecastBand && (
+              <Area
+                type="monotone"
+                dataKey="__band_upper"
+                baseValue={(e: { __band_lower?: number }) => e.__band_lower ?? 0}
+                fill="var(--primary)"
+                fillOpacity={0.12}
+                stroke="none"
+                connectNulls
+                isAnimationActive={false}
+              />
+            )}
             {yKeys.map((key, idx) => (
               <Area
                 key={key}
@@ -387,7 +455,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
         ) : type === "bar" ? (
           <BarChart {...commonProps} data={barChartData}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-            <XAxis dataKey={barXKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={useComparisonBars ? (v: unknown) => String(v) : formatAxisTick} />
+            <XAxis dataKey={barXKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={useComparisonBars ? (v: unknown) => String(v) : axisTickFormatter} />
             <YAxis hide={hideY} tickFormatter={(v) => formatYAxisTick(v, useComparisonBars ? yKeys : useGroupedBars ? yKeys : barSeriesKeys)} tick={axisStyle} width={40} />
             <Tooltip
               contentStyle={tooltipStyle}
@@ -439,7 +507,7 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
           ) : (
             <ScatterChart {...commonProps}>
               <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-              <XAxis dataKey={xKey} type="number" axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
+              <XAxis dataKey={xKey} type="number" axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={axisTickFormatter} />
               <YAxis type="number" hide={hideY} domain={yDomain} tickFormatter={(v) => formatYAxisTick(v, yKeys)} tick={axisStyle} width={40} />
               <Tooltip contentStyle={tooltipStyle} cursor={{ strokeDasharray: "3 3" }} formatter={(value: unknown, name: string) => [formatChartValue(value, name), formatLabel(name)]} />
               {refLine}
@@ -451,13 +519,25 @@ export function DynamicChart({ data, config, className = "", showYAxis = false, 
         ) : (
           <LineChart {...commonProps}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-            <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={formatAxisTick} />
+            <XAxis dataKey={xKey} axisLine={false} tickLine={false} tick={axisStyle} dy={10} tickFormatter={axisTickFormatter} />
             <YAxis hide={hideY} domain={yDomain} tickFormatter={(v) => formatYAxisTick(v, yKeys)} tick={axisStyle} width={40} />
             {yKeysRight.length > 0 && <YAxis yAxisId="right" hide={hideY} domain={yDomainRight} orientation="right" tickFormatter={(v) => formatYAxisTick(v, yKeysRight)} tick={axisStyle} width={40} />}
             <Tooltip contentStyle={tooltipStyle} itemStyle={{ color: "var(--primary)" }} formatter={(value: unknown, name: string) => [formatChartValue(value, name), formatLabel(name)]} />
             {refLine}
             {(yKeys.length > 1 || yKeysRight.length > 0) && (
               <Legend wrapperStyle={{ fontSize: 11 }} formatter={(value) => formatLabel(value)} />
+            )}
+            {forecastBand && (
+              <Area
+                type="monotone"
+                dataKey="__band_upper"
+                baseValue={(e: { __band_lower?: number }) => e.__band_lower ?? 0}
+                fill="var(--primary)"
+                fillOpacity={0.12}
+                stroke="none"
+                connectNulls
+                isAnimationActive={false}
+              />
             )}
             {yKeys.map((key, idx) => (
               <Line

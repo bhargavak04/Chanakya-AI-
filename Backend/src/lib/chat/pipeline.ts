@@ -4,13 +4,30 @@
  */
 import { getLLMProvider } from "../llm/index.js";
 import { buildSystemPrompt, buildInsightPrompt } from "../llm/prompts.js";
-import { getSchemaForQuery, getSchemaForDb, formatSchemaForPrompt } from "../schema/retrieval.js";
+import { getSchemaForQuery, getSchemaForDb, formatSchemaForPrompt, getJoinsForTables } from "../schema/retrieval.js";
+import { ensureConnectedTables } from "../schema/joinGraph.js";
+import { extractQueryEntities, formatEntitiesForPrompt } from "./entities.js";
 import { validateAndSanitize } from "../sql/validator.js";
 import { executeQuery } from "../sql/executor.js";
 import { getConnectionConfig } from "../db/connections.js";
-import { computeForecast, parseForecastDays } from "./forecast.js";
-import { buildDiagnoseSystemPrompt, buildDiagnoseStepPrompt, parseDiagnoseStep } from "./diagnose.js";
+import { computeForecast, parseForecastHorizon, runProphetForecast } from "./forecast.js";
+import {
+  buildDiagnoseSystemPrompt,
+  buildDiagnoseStepPrompt,
+  buildDiagnosePlanFirstPrompt,
+  buildDiagnoseExecuteStepPrompt,
+  parseDiagnoseStep,
+} from "./diagnose.js";
+import {
+  buildMaxSystemPrompt,
+  buildMaxPlanFirstPrompt,
+  buildMaxExecuteStepPrompt,
+  buildMaxStepPrompt,
+  parseMaxStep,
+  MAX_MAX_STEPS,
+} from "./max.js";
 import { LOG_PREFIX, MAX_DIAGNOSE_STEPS, MAX_SQL_ATTEMPTS } from "../../core/constants.js";
+import { DIAGNOSE_FORCE_FINISH } from "../../core/prompts.js";
 import {
   ERR_DATABASE_NOT_FOUND,
   ERR_INVALID_LLM_OUTPUT,
@@ -85,6 +102,24 @@ function buildDataSummary(data: Record<string, unknown>[], chartConfig: ChartCon
   return summary;
 }
 
+/** When we have a forecast segment, label history vs predicted so the LLM knows which is which. */
+function buildForecastDataSummary(
+  data: Record<string, unknown>[],
+  chartConfig: ChartConfig,
+  forecastStartIndex: number
+): string {
+  if (data.length === 0) return "No data returned.";
+  const history = data.slice(0, forecastStartIndex);
+  const forecast = data.slice(forecastStartIndex);
+  const historySummary = buildDataSummary(history, chartConfig);
+  const forecastSummary = buildDataSummary(forecast, chartConfig);
+  return `HISTORICAL DATA (rows 1–${forecastStartIndex}, from the database): ${historySummary}
+
+FORECAST / PREDICTED DATA (rows ${forecastStartIndex + 1}–${data.length}, from the forecasting model): ${forecastSummary}
+
+The forecast segment is model output, not raw data. Interpret the historical trend and what the predicted segment implies.`;
+}
+
 async function generateAiInsights(
   mode: ChatMode,
   dataSummary: string,
@@ -97,14 +132,14 @@ async function generateAiInsights(
         { role: "user", content: buildInsightPrompt(mode, dataSummary, userQuestion) },
       ],
       temperature: 0.3,
-      maxTokens: 400,
+      maxTokens: 600,
     });
     const text = result.content.trim();
     const lines = text
       .split(/\n+/)
       .map((s) => s.replace(/^[-*•]\s*/, "").trim())
       .filter((s) => s.length > 10);
-    return lines.length > 0 ? lines.slice(0, 8) : [text.slice(0, 500) || MSG_SEE_CHART_DETAILS];
+    return lines.length > 0 ? lines.slice(0, 12) : [text.slice(0, 500) || MSG_SEE_CHART_DETAILS];
   } catch {
     return [];
   }
@@ -123,9 +158,14 @@ async function runDiagnosePipeline(
   message: string,
   config: { name: string; type: string }
 ): Promise<ChatResponseSuccess | ChatResponseError> {
+  const entities = await extractQueryEntities(message);
   const tables = getSchemaForDb(dbId);
-  const schemaText = formatSchemaForPrompt(tables);
-  const systemPrompt = buildDiagnoseSystemPrompt(schemaText, config.type);
+  const joins = getJoinsForTables(dbId, tables.map((t) => t.id));
+  const schemaText =
+    formatSchemaForPrompt(tables) +
+    (joins.length > 0 ? "\n\nAvailable joins:\n" + joins.join("\n") : "");
+  const intentContext = formatEntitiesForPrompt(entities);
+  const systemPrompt = buildDiagnoseSystemPrompt(schemaText, config.type, intentContext);
   const llm = getLLMProvider();
   const steps: { query: string; resultSummary: string }[] = [];
   let lastRows: Record<string, unknown>[] = [];
@@ -135,8 +175,11 @@ async function runDiagnosePipeline(
 
   const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
     { role: "system", content: systemPrompt },
-    { role: "user", content: message },
+    { role: "user", content: buildDiagnosePlanFirstPrompt(message) },
   ];
+
+  let planSteps: string[] | null = null;
+  let diagnoseRetryRequested = false;
 
   for (let i = 0; i < MAX_DIAGNOSE_STEPS; i++) {
     let content: string;
@@ -156,6 +199,16 @@ async function runDiagnosePipeline(
     const parsed = parseDiagnoseStep(content);
     if ("error" in parsed) {
       return { error: { type: "invalid_query", message: parsed.error } };
+    }
+
+    if (parsed.action === "plan") {
+      planSteps = parsed.steps;
+      messages.push({ role: "assistant", content });
+      messages.push({
+        role: "user",
+        content: buildDiagnoseExecuteStepPrompt(planSteps, 0, []),
+      });
+      continue;
     }
 
     if (parsed.action === "finish") {
@@ -189,13 +242,18 @@ async function runDiagnosePipeline(
     }
 
     const validation = validateAndSanitize(parsed.query, config.type as DbType);
+    const nextUserContent = () =>
+      planSteps !== null
+        ? buildDiagnoseExecuteStepPrompt(planSteps, steps.length, steps)
+        : buildDiagnoseStepPrompt(message, steps);
+
     if (!validation.valid) {
       steps.push({
         query: parsed.query,
         resultSummary: `Error: ${validation.error ?? ERR_SQL_VALIDATION_FAILED}. Fix the query and try again.`,
       });
       messages.push({ role: "assistant", content });
-      messages.push({ role: "user", content: buildDiagnoseStepPrompt(message, steps) });
+      messages.push({ role: "user", content: nextUserContent() });
       continue;
     }
 
@@ -207,12 +265,24 @@ async function runDiagnosePipeline(
       rows = result.rows;
       queryTimeMs = result.durationMs;
       totalQueryTimeMs += queryTimeMs;
+      diagnoseRetryRequested = false;
     } catch (err) {
       const msg = err instanceof Error ? err.message : ERR_QUERY_FAILED;
       console.error(`${LOG_PREFIX} Diagnose query failed:`, err);
       steps.push({ query: parsed.query, resultSummary: `Error: ${msg}` });
       messages.push({ role: "assistant", content });
-      messages.push({ role: "user", content: buildDiagnoseStepPrompt(message, steps) });
+      if (!diagnoseRetryRequested) {
+        diagnoseRetryRequested = true;
+        allQueries.pop();
+        steps.pop();
+        messages.push({
+          role: "user",
+          content: `The previous query failed: ${msg}. Fix the SQL and output action: "query" with the corrected query only (same step).`,
+        });
+        continue;
+      }
+      diagnoseRetryRequested = false;
+      messages.push({ role: "user", content: nextUserContent() });
       continue;
     }
 
@@ -221,7 +291,50 @@ async function runDiagnosePipeline(
     const summary = buildDataSummary(rows, parsed.chart);
     steps.push({ query: parsed.query, resultSummary: summary });
     messages.push({ role: "assistant", content });
-    messages.push({ role: "user", content: buildDiagnoseStepPrompt(message, steps) });
+    messages.push({ role: "user", content: nextUserContent() });
+  }
+
+  if (steps.length > 0) {
+    messages.push({ role: "user", content: DIAGNOSE_FORCE_FINISH });
+    try {
+      const res = await llm.generate({
+        messages,
+        jsonMode: true,
+        temperature: 0.2,
+        maxTokens: 1024,
+      });
+      const parsed = parseDiagnoseStep(res.content);
+      if (!("error" in parsed) && parsed.action === "finish") {
+        const insights: string[] = [parsed.diagnosis_summary];
+        if (parsed.root_causes.length > 0) {
+          insights.push("", "Root causes:", ...parsed.root_causes.map((c) => `• ${c}`));
+        }
+        if (parsed.recommendations.length > 0) {
+          insights.push("", "Recommendations:", ...parsed.recommendations.map((r) => `• ${r}`));
+        }
+        return {
+          mode: "diagnose",
+          title: generateTitle(message, parsed.chart),
+          data: lastRows,
+          chart_config: lastRows.length > 0 ? parsed.chart : lastChart,
+          insights,
+          badges: [],
+          export: { csv_available: true, excel_available: true },
+          meta: {
+            db_source: config.name,
+            query_time_ms: totalQueryTimeMs,
+            sql: allQueries[allQueries.length - 1],
+            diagnostic_queries: allQueries,
+            queries_executed: allQueries.length,
+          },
+          diagnosis_summary: parsed.diagnosis_summary,
+          root_causes: parsed.root_causes,
+          recommendations: parsed.recommendations,
+        };
+      }
+    } catch {
+      // ignore; fall through to fallback
+    }
   }
 
   return {
@@ -231,6 +344,149 @@ async function runDiagnosePipeline(
     chart_config: lastChart,
     insights: [
       ERR_DIAGNOSE_MAX_STEPS,
+      lastRows.length > 0 ? buildDataSummary(lastRows, lastChart) : MSG_NO_DATA,
+    ],
+    badges: [],
+    export: { csv_available: true, excel_available: true },
+    meta: {
+      db_source: config.name,
+      query_time_ms: totalQueryTimeMs,
+      sql: allQueries[allQueries.length - 1],
+      diagnostic_queries: allQueries,
+      queries_executed: allQueries.length,
+    },
+  };
+}
+
+async function runMaxPipeline(
+  dbId: string,
+  message: string,
+  config: { name: string; type: string }
+): Promise<ChatResponseSuccess | ChatResponseError> {
+  const entities = await extractQueryEntities(message);
+  const tables = getSchemaForDb(dbId);
+  const joins = getJoinsForTables(dbId, tables.map((t) => t.id));
+  const schemaText =
+    formatSchemaForPrompt(tables) +
+    (joins.length > 0 ? "\n\nAvailable joins:\n" + joins.join("\n") : "");
+  const intentContext = formatEntitiesForPrompt(entities);
+  const systemPrompt = buildMaxSystemPrompt(schemaText, config.type, intentContext);
+  const llm = getLLMProvider();
+  const steps: { query: string; resultSummary: string }[] = [];
+  let lastRows: Record<string, unknown>[] = [];
+  let lastChart: ChartConfig = { type: "table", x_axis: "", y_axis: [] };
+  let totalQueryTimeMs = 0;
+  const allQueries: string[] = [];
+
+  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: buildMaxPlanFirstPrompt(message) },
+  ];
+
+  let planSteps: string[] | null = null;
+
+  for (let i = 0; i < MAX_MAX_STEPS; i++) {
+    let content: string;
+    try {
+      const res = await llm.generate({
+        messages,
+        jsonMode: true,
+        temperature: 0.2,
+        maxTokens: 1024,
+      });
+      content = res.content;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "LLM request failed";
+      return { error: { type: "llm_error", message: msg } };
+    }
+
+    const parsed = parseMaxStep(content);
+    if ("error" in parsed) {
+      return { error: { type: "invalid_query", message: parsed.error } };
+    }
+
+    if (parsed.action === "plan") {
+      planSteps = parsed.steps;
+      messages.push({ role: "assistant", content });
+      messages.push({
+        role: "user",
+        content: buildMaxExecuteStepPrompt(planSteps, 0, []),
+      });
+      continue;
+    }
+
+    if (parsed.action === "finish") {
+      const insights: string[] = [parsed.analysis_summary];
+      if (parsed.key_findings.length > 0) {
+        insights.push("", "Key findings:", ...parsed.key_findings.map((f) => `• ${f}`));
+      }
+
+      return {
+        mode: "max",
+        title: generateTitle(message, parsed.chart),
+        data: lastRows,
+        chart_config: lastRows.length > 0 ? parsed.chart : lastChart,
+        insights,
+        badges: [],
+        export: { csv_available: true, excel_available: true },
+        meta: {
+          db_source: config.name,
+          query_time_ms: totalQueryTimeMs,
+          sql: allQueries[allQueries.length - 1],
+          diagnostic_queries: allQueries,
+          queries_executed: allQueries.length,
+        },
+        analysis_summary: parsed.analysis_summary,
+        key_findings: parsed.key_findings,
+      };
+    }
+
+    const validation = validateAndSanitize(parsed.query, config.type as DbType);
+    const nextUserContent = () =>
+      planSteps !== null
+        ? buildMaxExecuteStepPrompt(planSteps, steps.length, steps)
+        : buildMaxStepPrompt(message, steps);
+
+    if (!validation.valid) {
+      steps.push({
+        query: parsed.query,
+        resultSummary: `Error: ${validation.error ?? ERR_SQL_VALIDATION_FAILED}. Fix the query and try again.`,
+      });
+      messages.push({ role: "assistant", content });
+      messages.push({ role: "user", content: nextUserContent() });
+      continue;
+    }
+
+    allQueries.push(validation.sql!);
+    let rows: Record<string, unknown>[];
+    try {
+      const result = await executeQuery(dbId, validation.sql!);
+      rows = result.rows;
+      totalQueryTimeMs += result.durationMs;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : ERR_QUERY_FAILED;
+      console.error(`${LOG_PREFIX} Max query failed:`, err);
+      steps.push({ query: parsed.query, resultSummary: `Error: ${msg}` });
+      messages.push({ role: "assistant", content });
+      messages.push({ role: "user", content: nextUserContent() });
+      continue;
+    }
+
+    lastRows = rows;
+    lastChart = parsed.chart;
+    const summary = buildDataSummary(rows, parsed.chart);
+    steps.push({ query: parsed.query, resultSummary: summary });
+    messages.push({ role: "assistant", content });
+    messages.push({ role: "user", content: nextUserContent() });
+  }
+
+  return {
+    mode: "max",
+    title: generateTitle(message, lastChart),
+    data: lastRows,
+    chart_config: lastChart,
+    insights: [
+      "Max analysis reached step limit.",
       lastRows.length > 0 ? buildDataSummary(lastRows, lastChart) : MSG_NO_DATA,
     ],
     badges: [],
@@ -263,13 +519,36 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
     return runDiagnosePipeline(dbId, message, config);
   }
 
-  const tables = await getSchemaForQuery(dbId, message);
-  if (tables.length === 0) {
+  if (mode === "max") {
+    const tables = getSchemaForDb(dbId);
+    if (tables.length === 0) {
+      return { error: { type: "no_schema", message: ERR_NO_SCHEMA } };
+    }
+    return runMaxPipeline(dbId, message, config);
+  }
+
+  const [entities, tablesRaw] = await Promise.all([
+    extractQueryEntities(message),
+    getSchemaForQuery(dbId, message),
+  ]);
+  if (tablesRaw.length === 0) {
     return { error: { type: "no_schema", message: ERR_NO_SCHEMA } };
   }
 
-  const schemaText = formatSchemaForPrompt(tables);
-  const systemPrompt = buildSystemPrompt(mode, schemaText, config.type, conversationState);
+  const tableIds = tablesRaw.map((t) => t.id);
+  const connectedIds = ensureConnectedTables(dbId, tableIds);
+  const tables = connectedIds.length < tableIds.length
+    ? tablesRaw.filter((t) => connectedIds.includes(t.id))
+    : tablesRaw;
+
+  const schemaText =
+    formatSchemaForPrompt(tables) +
+    (() => {
+      const joins = getJoinsForTables(dbId, tables.map((t) => t.id));
+      return joins.length > 0 ? "\n\nAvailable joins:\n" + joins.join("\n") : "";
+    })();
+  const intentContext = formatEntitiesForPrompt(entities);
+  const systemPrompt = buildSystemPrompt(mode, schemaText, config.type, conversationState, intentContext);
 
   const llm = getLLMProvider();
   let llmResult: { content: string };
@@ -302,8 +581,8 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
   console.log(`${LOG_PREFIX} LLM parsed JSON:`, JSON.stringify(parsed, null, 2));
   console.log(`${LOG_PREFIX} SQL generated:`, validation.sql);
 
-  let rows: Record<string, unknown>[];
-  let queryTimeMs: number;
+  let rows!: Record<string, unknown>[];
+  let queryTimeMs!: number;
   let currentParsed = parsed;
   let currentValidation = validation;
 
@@ -378,18 +657,33 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
   };
 
   let finalRows = rows;
+  let forecast_start_index: number | undefined;
+  let forecast_upper: number[] | undefined;
+  let forecast_lower: number[] | undefined;
 
   if (mode === "forecast" && rows.length >= 2) {
     const keys = Object.keys(rows[0] ?? {});
     const findKey = (name: string) => keys.find((k) => k === name || k.toLowerCase() === name.toLowerCase());
     const xKey = findKey(chartConfig.x_axis) ?? keys[0] ?? "";
     const yKey = findKey(chartConfig.y_axis?.[0] ?? "") ?? keys.filter((k) => k !== xKey)[0] ?? "";
-    const forecastDays = parseForecastDays(message);
-    const { rows: withForecast } = computeForecast(rows, xKey, yKey, forecastDays);
-    finalRows = withForecast;
+    const horizon = parseForecastHorizon(message);
+
+    const prophetResult = await runProphetForecast(rows, xKey, yKey, horizon.periods, horizon.unit);
+    if (prophetResult) {
+      finalRows = prophetResult.rows;
+      forecast_start_index = prophetResult.forecast_start_index;
+      forecast_upper = prophetResult.forecast_upper;
+      forecast_lower = prophetResult.forecast_lower;
+    } else {
+      const { rows: withForecast } = computeForecast(rows, xKey, yKey, horizon.periods, horizon.unit);
+      finalRows = withForecast;
+    }
   }
 
-  const dataSummary = buildDataSummary(finalRows, chartConfig);
+  const dataSummary =
+    mode === "forecast" && forecast_start_index != null && forecast_start_index > 0
+      ? buildForecastDataSummary(finalRows, chartConfig, forecast_start_index)
+      : buildDataSummary(finalRows, chartConfig);
   const aiInsights = await generateAiInsights(mode, dataSummary, message);
   const insights =
     aiInsights.length > 0
@@ -410,6 +704,11 @@ export async function runChatPipeline(input: ChatInput): Promise<ChatResponseSuc
       sql: validation.sql,
     },
   };
+  if (forecast_start_index !== undefined) {
+    response.forecast_start_index = forecast_start_index;
+    if (forecast_upper) response.forecast_upper = forecast_upper;
+    if (forecast_lower) response.forecast_lower = forecast_lower;
+  }
 
   return response;
 }

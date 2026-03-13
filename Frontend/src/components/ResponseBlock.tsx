@@ -7,6 +7,7 @@ import { DynamicChart } from "./charts/DynamicChart";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 import type { ChatResponseSuccess, ChartConfig } from "@/lib/api";
+import type { ForecastBand } from "./charts/DynamicChart";
 import type { ChartConfigOverride } from "@/context/AppContext";
 import { api } from "@/lib/api";
 import { downloadReport } from "@/lib/report";
@@ -43,7 +44,15 @@ export function ResponseBlock({ response, chartTypeOverride, chartConfigOverride
     badges,
     export: exportMeta,
     meta,
+    forecast_start_index,
+    forecast_upper,
+    forecast_lower,
   } = response;
+
+  const forecastBand: ForecastBand | undefined =
+    forecast_start_index != null && Array.isArray(forecast_upper) && Array.isArray(forecast_lower)
+      ? { startIndex: forecast_start_index, upper: forecast_upper, lower: forecast_lower }
+      : undefined;
 
   const baseConfig: ChartConfig =
     dataView === "table"
@@ -209,7 +218,12 @@ export function ResponseBlock({ response, chartTypeOverride, chartConfigOverride
             </button>
           )}
         </div>
-        <DynamicChart data={data} config={effectiveChartConfig} showYAxis={chartConfigOverride?.showYAxis ?? false} />
+        <DynamicChart
+          data={data}
+          config={effectiveChartConfig}
+          showYAxis={chartConfigOverride?.showYAxis ?? false}
+          forecastBand={forecastBand}
+        />
       </div>
 
       {!hideInsights && insights.length > 0 && (

@@ -64,14 +64,32 @@ export function initInternalDb(): Database.Database {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS schema_relationships (
+      id TEXT PRIMARY KEY,
+      db_id TEXT NOT NULL REFERENCES databases(id) ON DELETE CASCADE,
+      from_table_id TEXT NOT NULL REFERENCES schema_tables(id) ON DELETE CASCADE,
+      from_column_name TEXT NOT NULL,
+      to_table_name TEXT NOT NULL,
+      to_column_name TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_schema_tables_db ON schema_tables(db_id);
     CREATE INDEX IF NOT EXISTS idx_schema_columns_table ON schema_columns(table_id);
+    CREATE INDEX IF NOT EXISTS idx_schema_relationships_db ON schema_relationships(db_id);
+    CREATE INDEX IF NOT EXISTS idx_schema_relationships_from ON schema_relationships(from_table_id);
     CREATE INDEX IF NOT EXISTS idx_conversation_turns_conv ON conversation_turns(conversation_id);
   `);
 
   // Migration: add ssl_required for Azure/AWS
   try {
     db.exec("ALTER TABLE databases ADD COLUMN ssl_required INTEGER NOT NULL DEFAULT 1");
+  } catch {
+    // Column already exists
+  }
+
+  // Migration: column semantic type for schema linking (currency, timestamp, identifier, etc.)
+  try {
+    db.exec("ALTER TABLE schema_columns ADD COLUMN semantic_type TEXT");
   } catch {
     // Column already exists
   }
